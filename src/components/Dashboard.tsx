@@ -81,37 +81,13 @@ const Dashboard: React.FC = () => {
 
   const fetchFactoryStats = async () => {
     try {
-      // Get all machines and their stats
-      const machines = await apiService.getMachines();
-      let totalUnits = 0;
-      let totalOEE = 0;
-      let activeMachines = 0;
-
-      // Get stats for each machine
-      const statsPromises = machines.map((machine: any) => 
-        apiService.getMachineStats(machine._id, '24h').catch(() => null)
-      );
-      
-      const allStats = await Promise.all(statsPromises);
-      
-      allStats.forEach((stats, index) => {
-        if (stats) {
-          totalUnits += stats.totalUnitsProduced;
-          totalOEE += stats.oee;
-          if (machines[index].status === 'running') {
-            activeMachines++;
-          }
-        }
-      });
-
-      // Get unclassified stoppages count
-      const unclassifiedData = await apiService.request('/signals/unclassified-stoppages-count');
-
+      // Use optimized dashboard stats endpoint
+      const stats = await apiService.getDashboardStats();
       setFactoryStats({
-        totalUnits,
-        avgOEE: machines.length > 0 ? Math.round(totalOEE / machines.length) : 0,
-        unclassifiedStoppages: unclassifiedData.count || 0,
-        activeMachines
+        totalUnits: stats.totalUnits || 0,
+        avgOEE: stats.avgOEE || 0,
+        unclassifiedStoppages: stats.unclassifiedStoppages || 0,
+        activeMachines: stats.activeMachines || 0
       });
     } catch (err) {
       console.error('Failed to fetch factory stats:', err);

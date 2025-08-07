@@ -142,6 +142,11 @@ class ApiService {
     return this.request(`/analytics/department-stats/${departmentId}`);
   }
 
+  // New optimized dashboard stats endpoint
+  async getDashboardStats() {
+    return this.request('/analytics/dashboard-stats');
+  }
+
   // Machines
   async getMachinesByDepartment(departmentId: string) {
     return this.request(`/machines/department/${departmentId}`);

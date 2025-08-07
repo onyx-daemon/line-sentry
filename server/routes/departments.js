@@ -3,10 +3,11 @@ const Department = require('../models/Department');
 const Machine = require('../models/Machine');
 const Molds = require('../models/Mold');
 const { auth, adminAuth } = require('../middleware/auth');
+const cacheManager = require('../utils/cache');
 
 const router = express.Router();
 
-// Get all departments
+// Get all departments (optimized with caching)
 router.get('/', auth, async (req, res) => {
   try {
     let query = { isActive: true };
@@ -15,25 +16,57 @@ router.get('/', auth, async (req, res) => {
       query._id = req.user.departmentId._id;
     }
 
-    const departments = await Department.find(query).lean();
+    // Try cache first
+    let departments = cacheManager.getDepartments();
     
-    const departmentsWithCounts = await Promise.all(departments.map(async dept => {
-      const machines = await Machine.find({
-        departmentId: dept._id,
-        isActive: true
-      });
+    if (!departments) {
+      // Single aggregation query to get departments with machine counts
+      const aggregation = [
+        { $match: query },
+        {
+          $lookup: {
+            from: 'machines',
+            let: { deptId: '$_id' },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [
+                      { $eq: ['$departmentId', '$$deptId'] },
+                      { $eq: ['$isActive', true] }
+                    ]
+                  }
+                }
+              }
+            ],
+            as: 'machines'
+          }
+        },
+        {
+          $addFields: {
+            machineCount: { $size: '$machines' }
+          }
+        }
+      ];
 
-      const machineCount = machines.length;
-      return { ...dept, machines, machineCount };
-    }));
+      departments = await Department.aggregate(aggregation);
+      
+      // Cache for future requests
+      cacheManager.setDepartments(departments);
+    }
 
-    res.json(departmentsWithCounts);
+    // Filter for operators if needed
+    if (req.user.role === 'operator' && req.user.departmentId) {
+      departments = departments.filter(dept => dept._id.toString() === req.user.departmentId._id.toString());
+    }
+
+    res.json(departments);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Get all paginated departments 
+// Get all paginated departments (optimized)
 router.get('/admin/all', auth, adminAuth, async (req, res) => {
   try {
     const {
@@ -45,81 +78,96 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
       sortOrder = 'desc'
     } = req.query;
 
-    // Convert page and limit to numbers
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    // Build search query
-    let query = {};
+    // Build aggregation pipeline for better performance
+    const pipeline = [];
 
-    // Text search across name, description
+    // Match stage
+    let matchStage = {};
     if (search.trim()) {
-      query.$or = [
+      matchStage.$or = [
         { name: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } }
       ];
     }
-
-    // Filter by active status
     if (isActive !== '') {
-      query.isActive = isActive === 'true';
+      matchStage.isActive = isActive === 'true';
     }
 
-    // Build sort object
+    if (Object.keys(matchStage).length > 0) {
+      pipeline.push({ $match: matchStage });
+    }
+
+    // Add machine count lookup
+    pipeline.push({
+      $lookup: {
+        from: 'machines',
+        let: { deptId: '$_id' },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $eq: ['$departmentId', '$$deptId'] },
+                  { $eq: ['$isActive', true] }
+                ]
+              }
+            }
+          },
+          { $project: { _id: 1 } }
+        ],
+        as: 'machines'
+      }
+    });
+
+    pipeline.push({
+      $addFields: {
+        machineCount: { $size: '$machines' }
+      }
+    });
+
+    // Sort stage
     const sortObj = {};
     sortObj[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    pipeline.push({ $sort: sortObj });
 
-    // Execute queries
-    const [departments, totalDepartments] = await Promise.all([
-      Department.find(query)
-        .sort(sortObj)
-        .skip(skip)
-        .limit(limitNum)
-        .lean(),
-      Department.countDocuments(query)
+    // Get total count
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const [departments, countResult] = await Promise.all([
+      Department.aggregate([
+        ...pipeline,
+        { $skip: skip },
+        { $limit: limitNum }
+      ]),
+      Department.aggregate(countPipeline)
     ]);
 
-    // Add machine counts to each department
-    const departmentsWithCounts = await Promise.all(departments.map(async dept => {
-      const machines = await Machine.find({
-        departmentId: dept._id,
-        isActive: true
-      });
-      const machineCount = machines.length;
-      return { ...dept, machines, machineCount };
-    }));
-
-    // Calculate pagination info
+    const totalDepartments = countResult[0]?.total || 0;
     const totalPages = Math.ceil(totalDepartments / limitNum);
-    const hasNextPage = pageNum < totalPages;
-    const hasPrevPage = pageNum > 1;
 
     res.json({
-      departments: departmentsWithCounts,
+      departments,
       pagination: {
         currentPage: pageNum,
         totalPages,
         totalDepartments,
         limit: limitNum,
-        hasNextPage,
-        hasPrevPage,
-        nextPage: hasNextPage ? pageNum + 1 : null,
-        prevPage: hasPrevPage ? pageNum - 1 : null
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+        nextPage: pageNum < totalPages ? pageNum + 1 : null,
+        prevPage: pageNum > 1 ? pageNum - 1 : null
       },
-      filters: {
-        search,
-        isActive,
-        sortBy,
-        sortOrder
-      }
+      filters: { search, isActive, sortBy, sortOrder }
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Get department by ID with machines
+// Get department by ID with machines (optimized)
 router.get('/:id', auth, async (req, res) => {
   try {
     // Check if operator is accessing their own department
@@ -127,17 +175,38 @@ router.get('/:id', auth, async (req, res) => {
       return res.status(403).json({ message: 'Access denied to this department' });
     }
 
-    const department = await Department.findById(req.params.id);
+    // Single aggregation to get department with machines
+    const aggregation = [
+      { $match: { _id: new mongoose.Types.ObjectId(req.params.id) } },
+      {
+        $lookup: {
+          from: 'machines',
+          let: { deptId: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ['$departmentId', '$$deptId'] },
+                    { $eq: ['$isActive', true] }
+                  ]
+                }
+              }
+            }
+          ],
+          as: 'machines'
+        }
+      }
+    ];
+
+    const result = await Department.aggregate(aggregation);
+    const department = result[0];
+
     if (!department) {
       return res.status(404).json({ message: 'Department not found' });
     }
 
-    const machines = await Machine.find({ departmentId: req.params.id, isActive: true });
-    
-    res.json({
-      ...department.toObject(),
-      machines
-    });
+    res.json(department);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -148,6 +217,10 @@ router.post('/', auth, adminAuth, async (req, res) => {
   try {
     const department = new Department(req.body);
     await department.save();
+    
+    // Invalidate cache
+    cacheManager.invalidateDepartments();
+    
     res.status(201).json(department);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -162,29 +235,15 @@ router.put('/:id', auth, adminAuth, async (req, res) => {
       req.body,
       { new: true }
     );
+    
     if (!department) {
       return res.status(404).json({ message: 'Department not found' });
     }
-    res.json(department);
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-// New endpoint to get all departments (including inactive)
-router.get('/admin/all', auth, adminAuth, async (req, res) => {
-  try {
-    const departments = await Department.find({}).lean();
     
-    const departmentsWithCounts = await Promise.all(departments.map(async dept => {
-      const machineCount = await Machine.countDocuments({ 
-        departmentId: dept._id,
-        isActive: true 
-      });
-      return { ...dept, machineCount };
-    }));
-
-    res.json(departmentsWithCounts);
+    // Invalidate cache
+    cacheManager.invalidateDepartments();
+    
+    res.json(department);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -193,26 +252,26 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
 // Delete department (Admin only)
 router.delete('/:id', auth, adminAuth, async (req, res) => {
   try {
-    // Check if department exists
     const department = await Department.findById(req.params.id);
     if (!department) {
       return res.status(404).json({ message: 'Department not found' });
     }
 
-    // Delete associated machines first
-    await Machine.deleteMany({ departmentId: req.params.id });
+    // Batch delete operations
+    await Promise.all([
+      Machine.deleteMany({ departmentId: req.params.id }),
+      Molds.deleteMany({ departmentId: req.params.id }),
+      Department.findByIdAndDelete(req.params.id)
+    ]);
 
-    // Delete associated molds first
-    await Molds.deleteMany({ departmentId: req.params.id });
-
-    // Then delete department
-    await Department.findByIdAndDelete(req.params.id);
+    // Invalidate caches
+    cacheManager.invalidateDepartments();
+    cacheManager.invalidateMolds();
 
     res.json({ message: 'Department, associated machines, and associated molds deleted successfully' });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
-
 
 module.exports = router;

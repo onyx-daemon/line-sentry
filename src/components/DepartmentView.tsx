@@ -206,12 +206,23 @@ const DepartmentView: React.FC = () => {
 
   const fetchMachineStats = async () => {
     try {
-      const stats: {[machineId: string]: MachineStats} = {};
-      for (const machine of machines) {
-        const machineStats = await apiService.getMachineStats(machine._id, '24h');
-        stats[machine._id] = machineStats;
+      // Batch fetch machine stats to reduce API calls
+      if (machines.length > 0) {
+        const statsPromises = machines.map(machine => 
+          apiService.getMachineStats(machine._id, '24h').catch(() => null)
+        );
+        
+        const allStats = await Promise.all(statsPromises);
+        const stats: {[machineId: string]: MachineStats} = {};
+        
+        machines.forEach((machine, index) => {
+          if (allStats[index]) {
+            stats[machine._id] = allStats[index];
+          }
+        });
+        
+        setMachineStats(stats);
       }
-      setMachineStats(stats);
     } catch (error) {
       console.error('Failed to fetch machine stats:', error);
     }

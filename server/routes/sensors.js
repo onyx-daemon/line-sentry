@@ -2,21 +2,24 @@ const express = require('express');
 const Sensor = require('../models/Sensor');
 const SensorPinMapping = require('../models/SensorPinMapping');
 const { auth, adminAuth } = require('../middleware/auth');
-const Machine = require('../models/Machine')
+const Machine = require('../models/Machine');
 
 const router = express.Router();
 
-// Get all sensors
+// Get all sensors (optimized)
 router.get('/', auth, async (req, res) => {
   try {
-    const sensors = await Sensor.find({ isActive: true }).populate('machineId');
+    const sensors = await Sensor.find({ isActive: true })
+      .populate('machineId', 'name _id')
+      .lean();
+    
     res.json(sensors);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Add this new endpoint for paginated sensors
+// Get paginated sensors for admin (optimized with aggregation)
 router.get('/admin/all', auth, adminAuth, async (req, res) => {
   try {
     const {
@@ -30,63 +33,106 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
       sortOrder = 'desc'
     } = req.query;
 
-    // Convert page and limit to numbers
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    // Build the base query
-    let query = {};
+    // Build aggregation pipeline
+    const pipeline = [];
 
-    // Text search across multiple fields
+    // Match stage
+    let matchStage = {};
     if (search.trim()) {
-      query.$or = [
+      matchStage.$or = [
         { name: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } },
         { sensorType: { $regex: search, $options: 'i' } }
       ];
     }
+    if (status !== '') matchStage.isActive = status === 'true';
+    if (sensorType.trim()) matchStage.sensorType = sensorType;
 
-    // Filter by department
+    // Department filter requires machine lookup
     if (department.trim()) {
-      // We need to get the machine IDs that belong to this department
-      const machinesInDepartment = await Machine.find({ departmentId: department }).select('_id');
-      const machineIds = machinesInDepartment.map(m => m._id);
-      query.machineId = { $in: machineIds };
+      pipeline.push({
+        $lookup: {
+          from: 'machines',
+          localField: 'machineId',
+          foreignField: '_id',
+          as: 'machine'
+        }
+      });
+      
+      pipeline.push({
+        $match: {
+          'machine.departmentId': new mongoose.Types.ObjectId(department)
+        }
+      });
     }
 
-    // Filter by status
-    if (status !== '') {
-      query.isActive = status === 'true';
+    if (Object.keys(matchStage).length > 0) {
+      pipeline.push({ $match: matchStage });
     }
 
-    // Filter by sensor type
-    if (sensorType.trim()) {
-      query.sensorType = sensorType;
+    // Populate machine and department info
+    if (!department.trim()) {
+      pipeline.push({
+        $lookup: {
+          from: 'machines',
+          localField: 'machineId',
+          foreignField: '_id',
+          as: 'machine'
+        }
+      });
     }
 
-    // Build sort object
+    pipeline.push({
+      $lookup: {
+        from: 'departments',
+        localField: 'machine.departmentId',
+        foreignField: '_id',
+        as: 'department'
+      }
+    });
+
+    pipeline.push({
+      $addFields: {
+        machineId: {
+          _id: { $arrayElemAt: ['$machine._id', 0] },
+          name: { $arrayElemAt: ['$machine.name', 0] },
+          departmentId: {
+            _id: { $arrayElemAt: ['$department._id', 0] },
+            name: { $arrayElemAt: ['$department.name', 0] }
+          }
+        }
+      }
+    });
+
+    pipeline.push({
+      $project: {
+        machine: 0,
+        department: 0
+      }
+    });
+
+    // Sort stage
     const sortObj = {};
     sortObj[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    pipeline.push({ $sort: sortObj });
 
-    // Execute query to get paginated results
-    const sensorsQuery = Sensor.find(query)
-      .populate({
-        path: 'machineId',
-        populate: { path: 'departmentId' }
-      })
-      .sort(sortObj)
-      .skip(skip)
-      .limit(limitNum);
+    // Get total count and paginated results
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const [sensors, countResult] = await Promise.all([
+      Sensor.aggregate([
+        ...pipeline,
+        { $skip: skip },
+        { $limit: limitNum }
+      ]),
+      Sensor.aggregate(countPipeline)
+    ]);
 
-    const totalSensorsQuery = Sensor.countDocuments(query);
-
-    const [sensors, totalSensors] = await Promise.all([sensorsQuery, totalSensorsQuery]);
-
-    // Calculate pagination info
+    const totalSensors = countResult[0]?.total || 0;
     const totalPages = Math.ceil(totalSensors / limitNum);
-    const hasNextPage = pageNum < totalPages;
-    const hasPrevPage = pageNum > 1;
 
     res.json({
       sensors,
@@ -95,32 +141,28 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
         totalPages,
         totalSensors,
         limit: limitNum,
-        hasNextPage,
-        hasPrevPage,
-        nextPage: hasNextPage ? pageNum + 1 : null,
-        prevPage: hasPrevPage ? pageNum - 1 : null
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+        nextPage: pageNum < totalPages ? pageNum + 1 : null,
+        prevPage: pageNum > 1 ? pageNum - 1 : null
       },
-      filters: {
-        search,
-        department,
-        status,
-        sensorType,
-        sortBy,
-        sortOrder
-      }
+      filters: { search, department, status, sensorType, sortBy, sortOrder }
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Get sensors by machine
+// Get sensors by machine (optimized)
 router.get('/machine/:machineId', auth, async (req, res) => {
   try {
     const sensors = await Sensor.find({ 
       machineId: req.params.machineId, 
       isActive: true 
-    }).populate('machineId');
+    })
+    .populate('machineId', 'name _id')
+    .lean();
+    
     res.json(sensors);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -157,15 +199,16 @@ router.put('/:id', auth, adminAuth, async (req, res) => {
   }
 });
 
+// Delete sensor (optimized with batch operations)
 router.delete('/:id', auth, adminAuth, async (req, res) => {
   try {
-    // Delete any pin mappings first
-    await SensorPinMapping.deleteMany({ sensorId: req.params.id });
+    // Batch delete sensor and its mappings
+    const [deletedMappings, deletedSensor] = await Promise.all([
+      SensorPinMapping.deleteMany({ sensorId: req.params.id }),
+      Sensor.findByIdAndDelete(req.params.id)
+    ]);
     
-    // Then hard delete the sensor
-    const sensor = await Sensor.findByIdAndDelete(req.params.id);
-    
-    if (!sensor) {
+    if (!deletedSensor) {
       return res.status(404).json({ message: 'Sensor not found' });
     }
     
@@ -180,34 +223,70 @@ router.post('/pin-mapping', auth, adminAuth, async (req, res) => {
   try {
     const { sensorId, pinId } = req.body;
     
-    // Check if pin is already occupied
-    const existingMapping = await SensorPinMapping.findOne({ pinId });
-    if (existingMapping) {
+    // Check constraints with single query
+    const [existingPinMapping, existingSensorMapping] = await Promise.all([
+      SensorPinMapping.findOne({ pinId }).lean(),
+      SensorPinMapping.findOne({ sensorId }).lean()
+    ]);
+    
+    if (existingPinMapping) {
       return res.status(400).json({ message: 'Pin is already occupied' });
     }
 
-    // Check if sensor is already mapped
-    const existingSensorMapping = await SensorPinMapping.findOne({ sensorId });
     if (existingSensorMapping) {
       return res.status(400).json({ message: 'Sensor is already mapped to a pin' });
     }
 
     const mapping = new SensorPinMapping({ sensorId, pinId });
     await mapping.save();
+    
     res.status(201).json(mapping);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Get pin mappings
+// Get pin mappings (optimized with aggregation)
 router.get('/pin-mappings', auth, adminAuth, async (req, res) => {
   try {
-    const mappings = await SensorPinMapping.find({})
-      .populate({
-        path: 'sensorId',
-        populate: { path: 'machineId' }  // Populate machineId for sensor
-      });
+    const mappings = await SensorPinMapping.aggregate([
+      {
+        $lookup: {
+          from: 'sensors',
+          localField: 'sensorId',
+          foreignField: '_id',
+          as: 'sensor'
+        }
+      },
+      {
+        $lookup: {
+          from: 'machines',
+          localField: 'sensor.machineId',
+          foreignField: '_id',
+          as: 'machine'
+        }
+      },
+      {
+        $addFields: {
+          sensorId: {
+            _id: { $arrayElemAt: ['$sensor._id', 0] },
+            name: { $arrayElemAt: ['$sensor.name', 0] },
+            sensorType: { $arrayElemAt: ['$sensor.sensorType', 0] },
+            machineId: {
+              _id: { $arrayElemAt: ['$machine._id', 0] },
+              name: { $arrayElemAt: ['$machine.name', 0] }
+            }
+          }
+        }
+      },
+      {
+        $project: {
+          sensor: 0,
+          machine: 0
+        }
+      }
+    ]);
+    
     res.json(mappings);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });

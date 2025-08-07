@@ -1,10 +1,11 @@
 const express = require('express');
 const Mold = require('../models/Mold');
 const { auth, adminAuth } = require('../middleware/auth');
+const cacheManager = require('../utils/cache');
 
 const router = express.Router();
 
-// Get all molds
+// Get all molds (optimized with caching)
 router.get('/', auth, async (req, res) => {
   try {
     let query = { isActive: true };
@@ -13,14 +14,36 @@ router.get('/', auth, async (req, res) => {
       query.departmentId = req.user.departmentId._id;
     }
 
-    const molds = await Mold.find(query).populate('departmentId');
-    res.json(molds);
+    // Try cache first
+    let molds = cacheManager.getMolds();
+    
+    if (!molds) {
+      molds = await Mold.find({})
+        .populate('departmentId', 'name _id')
+        .lean();
+      
+      // Cache all molds
+      cacheManager.setMolds(molds);
+    }
+
+    // Filter based on query
+    const filteredMolds = molds.filter(mold => {
+      if (!mold.isActive && query.isActive) return false;
+      
+      if (req.user.role === 'operator' && req.user.departmentId) {
+        return mold.departmentId?._id?.toString() === req.user.departmentId._id.toString();
+      }
+      
+      return true;
+    });
+
+    res.json(filteredMolds);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Get paginated molds for admin
+// Get paginated molds for admin (optimized)
 router.get('/admin/all', auth, adminAuth, async (req, res) => {
   try {
     const {
@@ -33,50 +56,72 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
       sortOrder = 'desc'
     } = req.query;
 
-    // Convert page and limit to numbers
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    // Build search query
-    let query = {};
+    // Build aggregation pipeline
+    const pipeline = [];
 
-    // Text search across name, description
+    // Match stage
+    let matchStage = {};
     if (search.trim()) {
-      query.$or = [
+      matchStage.$or = [
         { name: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } }
       ];
     }
-
-    // Filter by department
     if (department.trim()) {
-      query.departmentId = department;
+      matchStage.departmentId = new mongoose.Types.ObjectId(department);
     }
-
-    // Filter by active status
     if (isActive !== '') {
-      query.isActive = isActive === 'true';
+      matchStage.isActive = isActive === 'true';
     }
 
-    // Build sort object
+    if (Object.keys(matchStage).length > 0) {
+      pipeline.push({ $match: matchStage });
+    }
+
+    // Lookup department info
+    pipeline.push({
+      $lookup: {
+        from: 'departments',
+        localField: 'departmentId',
+        foreignField: '_id',
+        as: 'departmentInfo'
+      }
+    });
+
+    pipeline.push({
+      $addFields: {
+        departmentId: { $arrayElemAt: ['$departmentInfo', 0] }
+      }
+    });
+
+    pipeline.push({
+      $project: {
+        departmentInfo: 0
+      }
+    });
+
+    // Sort stage
     const sortObj = {};
     sortObj[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    pipeline.push({ $sort: sortObj });
 
-    // Execute queries
-    const [molds, totalMolds] = await Promise.all([
-      Mold.find(query)
-        .populate('departmentId')
-        .sort(sortObj)
-        .skip(skip)
-        .limit(limitNum),
-      Mold.countDocuments(query)
+    // Get total count and paginated results
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const [molds, countResult] = await Promise.all([
+      Mold.aggregate([
+        ...pipeline,
+        { $skip: skip },
+        { $limit: limitNum }
+      ]),
+      Mold.aggregate(countPipeline)
     ]);
 
-    // Calculate pagination info
+    const totalMolds = countResult[0]?.total || 0;
     const totalPages = Math.ceil(totalMolds / limitNum);
-    const hasNextPage = pageNum < totalPages;
-    const hasPrevPage = pageNum > 1;
 
     res.json({
       molds,
@@ -85,18 +130,12 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
         totalPages,
         totalMolds,
         limit: limitNum,
-        hasNextPage,
-        hasPrevPage,
-        nextPage: hasNextPage ? pageNum + 1 : null,
-        prevPage: hasPrevPage ? pageNum - 1 : null
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+        nextPage: pageNum < totalPages ? pageNum + 1 : null,
+        prevPage: pageNum > 1 ? pageNum - 1 : null
       },
-      filters: {
-        search,
-        department,
-        isActive,
-        sortBy,
-        sortOrder
-      }
+      filters: { search, department, isActive, sortBy, sortOrder }
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -108,6 +147,10 @@ router.post('/', auth, adminAuth, async (req, res) => {
   try {
     const mold = new Mold(req.body);
     await mold.save();
+    
+    // Invalidate cache
+    cacheManager.invalidateMolds();
+    
     res.status(201).json(mold);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -127,19 +170,26 @@ router.put('/:id', auth, adminAuth, async (req, res) => {
       return res.status(404).json({ message: 'Mold not found' });
     }
     
+    // Invalidate cache
+    cacheManager.invalidateMolds();
+    
     res.json(mold);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Delete mold (Admin only) - hard delete
+// Delete mold (Admin only)
 router.delete('/:id', auth, adminAuth, async (req, res) => {
   try {
     const mold = await Mold.findByIdAndDelete(req.params.id);
     if (!mold) {
       return res.status(404).json({ message: 'Mold not found' });
     }
+    
+    // Invalidate cache
+    cacheManager.invalidateMolds();
+    
     res.json({ message: 'Mold deleted successfully' });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -156,6 +206,9 @@ router.patch('/:id/status', auth, adminAuth, async (req, res) => {
 
     mold.isActive = !mold.isActive;
     await mold.save();
+
+    // Invalidate cache
+    cacheManager.invalidateMolds();
 
     res.json({ 
       message: `Mold ${mold.isActive ? 'activated' : 'deactivated'} successfully`,
