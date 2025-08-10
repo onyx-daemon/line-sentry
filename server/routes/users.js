@@ -1,30 +1,33 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const { auth, adminAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Get all users without pagination and search
+// Get all users without pagination - Optimized
 router.get('/', auth, async (req, res) => {
   try {
     let query = { isActive: true };
     
     // Operators only see users in their department
     if (req.user.role === 'operator' && req.user.departmentId) {
-      query.departmentId = req.user.departmentId;
+      query.departmentId = req.user.departmentId._id;
     }
 
     const users = await User.find(query)
       .populate('departmentId', 'name _id')
-      .select('-password');
+      .select('-password -__v')
+      .lean();
 
     res.json(users);
   } catch (error) {
+    console.error('Users fetch error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Get all users with pagination and search (Admin only)
+// Get paginated users for admin - Optimized
 router.get('/admin/all', auth, adminAuth, async (req, res) => {
   try {
     const {
@@ -38,56 +41,73 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
       sortOrder = 'desc'
     } = req.query;
 
-    // Convert page and limit to numbers
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.max(1, Math.min(100, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
 
-    // Build search query
-    let query = {};
+    // Build aggregation pipeline
+    const pipeline = [];
 
-    // Text search across username, email
+    // Match stage
+    const matchStage = {};
     if (search.trim()) {
-      query.$or = [
+      matchStage.$or = [
         { username: { $regex: search, $options: 'i' } },
         { email: { $regex: search, $options: 'i' } }
       ];
     }
-
-    // Filter by role
     if (role.trim()) {
-      query.role = role;
+      matchStage.role = role;
     }
-
-    // Filter by department (for operators)
     if (department.trim()) {
-      query.departmentId = department;
+      matchStage.departmentId = new mongoose.Types.ObjectId(department);
     }
-
-    // Filter by active status
     if (isActive !== '') {
-      query.isActive = isActive === 'true';
+      matchStage.isActive = isActive === 'true';
     }
 
-    // Build sort object
+    if (Object.keys(matchStage).length > 0) {
+      pipeline.push({ $match: matchStage });
+    }
+
+    // Lookup department info
+    pipeline.push({
+      $lookup: {
+        from: 'departments',
+        localField: 'departmentId',
+        foreignField: '_id',
+        as: 'departmentId',
+        pipeline: [{ $project: { name: 1 } }]
+      }
+    });
+
+    pipeline.push({
+      $unwind: { path: '$departmentId', preserveNullAndEmptyArrays: true }
+    });
+
+    // Remove password field
+    pipeline.push({
+      $project: { password: 0, __v: 0 }
+    });
+
+    // Sort stage
     const sortObj = {};
     sortObj[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    pipeline.push({ $sort: sortObj });
 
-    // Execute queries
-    const [users, totalUsers] = await Promise.all([
-      User.find(query)
-        .populate('departmentId', 'name _id')
-        .select('-password')
-        .sort(sortObj)
-        .skip(skip)
-        .limit(limitNum),
-      User.countDocuments(query)
-    ]);
+    // Get total count
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const [countResult] = await User.aggregate(countPipeline);
+    const totalUsers = countResult?.total || 0;
+
+    // Add pagination
+    pipeline.push({ $skip: skip }, { $limit: limitNum });
+
+    // Execute main query
+    const users = await User.aggregate(pipeline);
 
     // Calculate pagination info
     const totalPages = Math.ceil(totalUsers / limitNum);
-    const hasNextPage = pageNum < totalPages;
-    const hasPrevPage = pageNum > 1;
 
     res.json({
       users,
@@ -96,56 +116,84 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
         totalPages,
         totalUsers,
         limit: limitNum,
-        hasNextPage,
-        hasPrevPage,
-        nextPage: hasNextPage ? pageNum + 1 : null,
-        prevPage: hasPrevPage ? pageNum - 1 : null
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+        nextPage: pageNum < totalPages ? pageNum + 1 : null,
+        prevPage: pageNum > 1 ? pageNum - 1 : null
       },
-      filters: {
-        search,
-        role,
-        department,
-        isActive,
-        sortBy,
-        sortOrder
-      }
+      filters: { search, role, department, isActive, sortBy, sortOrder }
     });
   } catch (error) {
+    console.error('Admin users fetch error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Create user (Admin only)
+// Create user (Admin only) - Optimized
 router.post('/', auth, adminAuth, async (req, res) => {
   try {
-    const { role, departmentId } = req.body;
+    const { username, email, password, role, departmentId } = req.body;
     
-    // Validate department for operators
+    // Validate required fields
+    if (!username || !email || !password || !role) {
+      return res.status(400).json({ message: 'All required fields must be provided' });
+    }
+
     if (role === 'operator' && !departmentId) {
       return res.status(400).json({ message: 'Department is required for operators' });
     }
-    
-    // Remove departmentId for non-operators
+
+    // Check for existing username/email in single query
+    const existingUser = await User.findOne({
+      $or: [
+        { username: { $regex: `^${username.trim()}$`, $options: 'i' } },
+        { email: { $regex: `^${email.trim()}$`, $options: 'i' } }
+      ]
+    }).select('username email').lean();
+
+    if (existingUser) {
+      const field = existingUser.username.toLowerCase() === username.toLowerCase() ? 'Username' : 'Email';
+      return res.status(400).json({ message: `${field} already exists` });
+    }
+
+    // Validate department if provided
+    if (departmentId && !mongoose.Types.ObjectId.isValid(departmentId)) {
+      return res.status(400).json({ message: 'Invalid department ID' });
+    }
+
+    if (departmentId) {
+      const Department = require('../models/Department');
+      const deptExists = await Department.findById(departmentId).select('_id').lean();
+      if (!deptExists) {
+        return res.status(400).json({ message: 'Department not found' });
+      }
+    }
+
     const userData = {
-      ...req.body,
-      departmentId: role === 'operator' ? departmentId : undefined
+      username: username.trim(),
+      email: email.trim().toLowerCase(),
+      password: password.trim(),
+      role,
+      departmentId: role === 'operator' && departmentId ? new mongoose.Types.ObjectId(departmentId) : undefined
     };
 
     const user = new User(userData);
     await user.save();
     
     // Return user without password
-    const userWithoutPassword = user.toObject();
-    delete userWithoutPassword.password;
+    const userResponse = user.toObject();
+    delete userResponse.password;
+    delete userResponse.__v;
     
-    res.status(201).json(userWithoutPassword);
+    res.status(201).json(userResponse);
   } catch (error) {
-    let message = 'Server error';
+    console.error('User creation error:', error);
     
+    let message = 'Server error';
     if (error.code === 11000) {
-      if (error.keyPattern.username) {
+      if (error.keyPattern?.username) {
         message = 'Username already exists';
-      } else if (error.keyPattern.email) {
+      } else if (error.keyPattern?.email) {
         message = 'Email already exists';
       }
     }
@@ -154,67 +202,94 @@ router.post('/', auth, adminAuth, async (req, res) => {
   }
 });
 
-// Update user (Admin only)
+// Update user (Admin only) - Optimized
 router.put('/:id', auth, adminAuth, async (req, res) => {
   try {
-    // Prevent admin from deactivating their own account or other admin accounts
-    if (req.body.isActive === false) {
-      const targetUser = await User.findById(req.params.id);
-      if (!targetUser) {
-        return res.status(404).json({ message: 'User not found' });
-      }
-      
-      // Check if trying to deactivate own account
-      if (targetUser._id.toString() === req.user._id.toString()) {
-        return res.status(400).json({ message: 'You cannot deactivate your own account' });
-      }
-      
-      // Check if trying to deactivate another admin account
-      if (targetUser.role === 'admin') {
-        return res.status(400).json({ message: 'You cannot deactivate other admin accounts' });
-      }
+    const { id } = req.params;
+    const { username, email, password, role, departmentId, isActive } = req.body;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
     }
-    
-    const { password, ...updateData } = req.body;
-    
-    // Find user and update
-    const user = await User.findById(req.params.id);
-    if (!user) {
+
+    // Get current user data
+    const currentUser = await User.findById(id).select('role').lean();
+    if (!currentUser) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Update only provided fields
-    if (updateData.username !== undefined) user.username = updateData.username;
-    if (updateData.email !== undefined) user.email = updateData.email;
-    if (updateData.role !== undefined) {
-      user.role = updateData.role;
-      // Clear department for non-operators
-      if (updateData.role !== 'operator') {
-        user.departmentId = undefined;
+    // Prevent admin from deactivating their own account
+    if (isActive === false && id === req.user._id.toString()) {
+      return res.status(400).json({ message: 'You cannot deactivate your own account' });
+    }
+
+    // Prevent deactivating other admin accounts
+    if (isActive === false && currentUser.role === 'admin') {
+      return res.status(400).json({ message: 'You cannot deactivate other admin accounts' });
+    }
+
+    // Check for duplicate username/email if being updated
+    if (username || email) {
+      const duplicateQuery = { _id: { $ne: id } };
+      const orConditions = [];
+      
+      if (username) {
+        orConditions.push({ username: { $regex: `^${username.trim()}$`, $options: 'i' } });
+      }
+      if (email) {
+        orConditions.push({ email: { $regex: `^${email.trim()}$`, $options: 'i' } });
+      }
+      
+      if (orConditions.length > 0) {
+        duplicateQuery.$or = orConditions;
+        
+        const existingUser = await User.findOne(duplicateQuery).select('username email').lean();
+        if (existingUser) {
+          const field = username && existingUser.username.toLowerCase() === username.toLowerCase() 
+            ? 'Username' : 'Email';
+          return res.status(400).json({ message: `${field} already exists` });
+        }
       }
     }
-    if (updateData.departmentId !== undefined) user.departmentId = updateData.departmentId;
-    if (updateData.isActive !== undefined) user.isActive = updateData.isActive;
 
-    // Only update password if provided
+    // Build update object
+    const updateData = {};
+    if (username !== undefined) updateData.username = username.trim();
+    if (email !== undefined) updateData.email = email.trim().toLowerCase();
+    if (role !== undefined) {
+      updateData.role = role;
+      if (role !== 'operator') {
+        updateData.departmentId = undefined;
+      }
+    }
+    if (departmentId !== undefined && role === 'operator') {
+      if (!mongoose.Types.ObjectId.isValid(departmentId)) {
+        return res.status(400).json({ message: 'Invalid department ID' });
+      }
+      updateData.departmentId = new mongoose.Types.ObjectId(departmentId);
+    }
+    if (isActive !== undefined) updateData.isActive = isActive;
     if (password && password.trim() !== '') {
-      user.password = password;
+      updateData.password = password.trim();
     }
 
-    const updatedUser = await user.save();
+    const updatedUser = await User.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true, runValidators: true }
+    )
+    .populate('departmentId', 'name')
+    .select('-password -__v');
     
-    // Return user without password
-    const userWithoutPassword = updatedUser.toObject();
-    delete userWithoutPassword.password;
-    res.json(userWithoutPassword);
-    
+    res.json(updatedUser);
   } catch (error) {
-    let message = 'Server error';
+    console.error('User update error:', error);
     
+    let message = 'Server error';
     if (error.code === 11000) {
-      if (error.keyPattern.username) {
+      if (error.keyPattern?.username) {
         message = 'Username already exists';
-      } else if (error.keyPattern.email) {
+      } else if (error.keyPattern?.email) {
         message = 'Email already exists';
       }
     }
@@ -223,21 +298,28 @@ router.put('/:id', auth, adminAuth, async (req, res) => {
   }
 });
 
-// Delete user (Admin only)
+// Delete user (Admin only) - Optimized
 router.delete('/:id', auth, adminAuth, async (req, res) => {
   try {
+    const { id } = req.params;
     
-    if (req.params.id === req.user._id.toString()) {
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+    
+    if (id === req.user._id.toString()) {
       return res.status(400).json({ message: 'You cannot delete your own account' });
     }
     
-    const user = await User.findByIdAndDelete(req.params.id);
+    const user = await User.findByIdAndDelete(id).select('username').lean();
     
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
+    
     res.json({ message: 'User deleted successfully' });
   } catch (error) {
+    console.error('User deletion error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
