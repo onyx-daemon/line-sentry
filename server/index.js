@@ -6,7 +6,6 @@ const http = require('http');
 const socketIo = require('socket.io');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
-const compression = require('compression');
 
 const authRoutes = require('./routes/auth');
 const departmentRoutes = require('./routes/departments');
@@ -27,16 +26,10 @@ const io = socketIo(server, {
   cors: {
     origin: "http://localhost:5173",
     methods: ["GET", "POST"]
-  },
-  transports: ['websocket', 'polling'],
-  pingTimeout: 60000,
-  pingInterval: 25000
+  }
 });
 
 const PORT = process.env.PORT || 3001;
-
-// Enable compression for better performance
-app.use(compression());
 
 // Security middleware
 app.use(helmet({
@@ -56,16 +49,12 @@ app.use(helmet({
 // Rate limiting for auth endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 50,
+  max: 50, // Limit each IP to 10 requests per windowMs
   message: {
     message: 'Too many login attempts, please try again later'
   },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => {
-    // Skip rate limiting for health checks
-    return req.path === '/api/health';
-  }
 });
 
 // General rate limiting
@@ -74,10 +63,6 @@ const generalLimiter = rateLimit({
   max: 100, // Limit each IP to 100 requests per windowMs
   message: {
     message: 'Too many requests, please try again later'
-  },
-  skip: (req) => {
-    // Skip rate limiting for health checks and socket connections
-    return req.path === '/api/health' || req.path.startsWith('/socket.io');
   }
 });
 
@@ -89,27 +74,15 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 app.use(express.json());
-app.use(generalLimiter);
+// app.use(generalLimiter);
 
 // Make io available to routes
 app.set('io', io);
-global.io = io; // Make available globally for background tasks
 
-// Optimize MongoDB connection
-const mongoOptions = {
-  maxPoolSize: 10,
-  serverSelectionTimeoutMS: 5000,
-  socketTimeoutMS: 45000,
-  bufferCommands: false,
-  bufferMaxEntries: 0
-};
 // Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/industrial_iot', mongoOptions)
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/industrial_iot')
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => console.error('MongoDB connection error:', err));
-
-// Optimize mongoose settings
-mongoose.set('strictQuery', false);
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
@@ -129,11 +102,6 @@ io.on('connection', (socket) => {
     socket.leave(`machine-${machineId}`);
     console.log(`Socket ${socket.id} left machine-${machineId}`);
   });
-  
-  // Handle connection errors
-  socket.on('error', (error) => {
-    console.error('Socket error:', error);
-  });
 });
 
 // Routes
@@ -150,33 +118,7 @@ app.use('/api/reports', reportRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    memory: process.memoryUsage(),
-    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
-  });
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ 
-    message: 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && { error: err.message })
-  });
-});
-
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  server.close(() => {
-    mongoose.connection.close(false, () => {
-      console.log('MongoDB connection closed');
-      process.exit(0);
-    });
-  });
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 server.listen(PORT, () => {
