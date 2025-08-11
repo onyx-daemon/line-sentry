@@ -10,6 +10,8 @@
 - [Future Improvements](#future-improvements)
 - [Installation & Setup](#installation--setup)
 - [Usage](#usage)
+- [Architecture](#architecture)
+- [Miscellaneous](#miscellaneous)
 
 ## 1. Overview <a name="overview"></a>
 LineSentry is a real-time analytics platform for industrial machinery, designed to monitor OEE (Overall Equipment Effectiveness), MTTR (Mean Time To Repair), and MTBF (Mean Time Between Failures). It integrates with PLCs via Raspberry Pi to capture power/unit-cycle signals, replacing legacy SAP-based systems and proprietary solutions like ProManage. The platform offers live dashboards, automated alerts, and customizable reporting, empowering Dawlance with full control over machine analytics.
