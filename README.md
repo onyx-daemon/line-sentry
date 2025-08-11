@@ -149,3 +149,14 @@ LineSentry leverages PLCs + Raspberry Pi to ingest real-time signals from generi
 - **Dashboard:**
   - Monitor factory/department OEE at a glance.
   - Click machines to analyze trends or update production logs.
+
+## 10. Architecture <a name="architecture"></a>
+
+<img width="1877" height="705" alt="arch-diag-line-sentry" src="https://github.com/user-attachments/assets/bfa6163d-5df1-4389-a179-30066e4d9a6e" />
+
+## 11. Miscellaneous <a name="miscllaneous"></a>
+
+![setup-line-sentry](https://github.com/user-attachments/assets/b26964fb-bb9e-402f-97d5-bf8a76f7d8a7)
+
+![line-sentry-setup](https://github.com/user-attachments/assets/efa331f9-c634-4626-89ce-ce2b80e7a569)
+
