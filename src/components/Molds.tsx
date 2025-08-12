@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useCallback, useContext } from 'react';
+import { useForm, FormProvider } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { useAuth } from '../context/AuthContext';
 import { Mold, Department } from '../types';
 import apiService from '../services/api';
@@ -42,6 +45,23 @@ interface MoldsResponse {
   };
 }
 
+// Zod schemas
+const moldSchema = z.object({
+  name: z.string()
+    .min(3, "Name must be at least 3 characters")
+    .max(50, "Name cannot exceed 50 characters"),
+  description: z.string()
+    .max(200, "Description cannot exceed 200 characters")
+    .optional(),
+  productionCapacityPerHour: z.number()
+    .min(1, "Capacity must be at least 1 unit/hour")
+    .positive("Capacity must be a positive number"),
+  departmentId: z.string().nonempty("Department is required"),
+  isActive: z.boolean().default(true).optional()
+});
+
+type MoldFormData = z.infer<typeof moldSchema>;
+
 const Molds: React.FC = () => {
   const { isAdmin } = useAuth();
   const { isDarkMode } = useContext(ThemeContext);
@@ -62,13 +82,6 @@ const Molds: React.FC = () => {
   // Modal states
   const [isCreating, setIsCreating] = useState(false);
   const [editingMold, setEditingMold] = useState<Mold | null>(null);
-  const [formData, setFormData] = useState({
-    name: '',
-    description: '',
-    productionCapacityPerHour: 0,
-    departmentId: '',
-    isActive: true
-  });
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [statusTogglingId, setStatusTogglingId] = useState<string | null>(null);
 
@@ -91,6 +104,48 @@ const Molds: React.FC = () => {
   const buttonSecondaryClass = isDarkMode 
     ? 'border-gray-600 text-gray-300 hover:bg-gray-700' 
     : 'border-gray-300 text-gray-700 hover:bg-gray-50';
+  const errorClass = isDarkMode ? 'text-red-400' : 'text-red-600';
+
+  // React Hook Form
+  const createFormMethods = useForm<MoldFormData>({
+    resolver: zodResolver(moldSchema),
+    defaultValues: {
+      name: '',
+      description: '',
+      productionCapacityPerHour: 0,
+      departmentId: '',
+      isActive: true
+    }
+  });
+
+  const editFormMethods = useForm<MoldFormData>({
+    resolver: zodResolver(moldSchema),
+    defaultValues: {
+      name: '',
+      description: '',
+      productionCapacityPerHour: 0,
+      departmentId: '',
+      isActive: true
+    }
+  });
+
+  // Reset forms when modals open/close
+  useEffect(() => {
+    if (isCreating) {
+      createFormMethods.reset();
+    }
+  }, [isCreating]);
+
+  useEffect(() => {
+    if (editingMold) {
+      editFormMethods.reset({
+        ...editingMold,
+        departmentId: typeof editingMold.departmentId === 'object' 
+          ? editingMold.departmentId._id 
+          : editingMold.departmentId
+      });
+    }
+  }, [editingMold]);
 
   const fetchData = useCallback(async (page = 1, search = '', department = '', isActive = '') => {
     try {
@@ -182,25 +237,6 @@ const Molds: React.FC = () => {
     setCurrentPage(1);
   };
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    if (editingMold) {
-      setEditingMold({ ...editingMold, [name]: value } as Mold);
-    } else {
-      setFormData({ ...formData, [name]: value });
-    }
-  };
-
-  const handleNumberInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    const numValue = parseFloat(value);
-    if (editingMold) {
-      setEditingMold({ ...editingMold, [name]: numValue } as Mold);
-    } else {
-      setFormData({ ...formData, [name]: numValue });
-    }
-  };
-
   const handleToggleStatus = async (id: string, isActive: boolean) => {
     try {
       setStatusTogglingId(id);
@@ -239,8 +275,7 @@ const Molds: React.FC = () => {
     }
   };
 
-  const handleCreateMold = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateMold = createFormMethods.handleSubmit(async (formData) => {
     try {
       await apiService.createMold(formData);
       toast.success('Mold created successfully');
@@ -248,25 +283,17 @@ const Molds: React.FC = () => {
       // Refresh the current page
       fetchData(currentPage, searchTerm, departmentFilter, statusFilter);
       setIsCreating(false);
-      setFormData({
-        name: '',
-        description: '',
-        productionCapacityPerHour: 0,
-        departmentId: '',
-        isActive: true
-      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create mold';
       toast.error(message);
     }
-  };
+  });
 
-  const handleUpdateMold = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleUpdateMold = editFormMethods.handleSubmit(async (formData) => {
     if (!editingMold) return;
     
     try {
-      await apiService.updateMold(editingMold._id, editingMold);
+      await apiService.updateMold(editingMold._id, formData);
       toast.success('Mold updated successfully');
       
       // Refresh the current page
@@ -276,7 +303,7 @@ const Molds: React.FC = () => {
       const message = err instanceof Error ? err.message : 'Failed to update mold';
       toast.error(message);
     }
-  };
+  });
 
   const getDepartmentName = (mold: Mold) => {
     if (typeof mold.departmentId === 'object') {
@@ -571,109 +598,117 @@ const Molds: React.FC = () => {
               </div>
             </div>
             
-            <form onSubmit={handleCreateMold} className="p-6 space-y-4">
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Mold Name *
-                </label>
-                <input
-                  type="text"
-                  name="name"
-                  required
-                  value={formData.name}
-                  onChange={handleInputChange}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  placeholder="Enter mold name"
-                />
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Description
-                </label>
-                <textarea
-                  name="description"
-                  value={formData.description}
-                  onChange={handleInputChange}
-                  rows={3}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  placeholder="Enter mold description"
-                />
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Production Capacity (units/hour) *
-                </label>
-                <input
-                  type="number"
-                  name="productionCapacityPerHour"
-                  required
-                  min="1"
-                  value={formData.productionCapacityPerHour}
-                  onChange={handleNumberInputChange}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  placeholder="Enter production capacity"
-                />
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Department *
-                </label>
-                <select
-                  name="departmentId"
-                  required
-                  value={formData.departmentId}
-                  onChange={handleInputChange}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                >
-                  <option value="">Select department</option>
-                  {departments.map((dept) => (
-                    <option key={dept._id} value={dept._id}>
-                      {dept.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Active Status
-                </label>
-                <div className="flex items-center">
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      name="isActive"
-                      checked={formData.isActive}
-                      onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                    <span className={`ml-3 text-sm ${textSecondaryClass}`}>
-                      {formData.isActive ? 'Active' : 'Inactive'}
-                    </span>
+            <FormProvider {...createFormMethods}>
+              <form onSubmit={handleCreateMold} className="p-6 space-y-4">
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Mold Name *
                   </label>
+                  <input
+                    type="text"
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    placeholder="Enter mold name"
+                    {...createFormMethods.register('name')}
+                  />
+                  {createFormMethods.formState.errors.name && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {createFormMethods.formState.errors.name.message}
+                    </p>
+                  )}
                 </div>
-              </div>
-              
-              <div className="flex justify-end space-x-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setIsCreating(false)}
-                  className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
-                >
-                  Create Mold
-                </button>
-              </div>
-            </form>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Description
+                  </label>
+                  <textarea
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    placeholder="Enter mold description"
+                    rows={3}
+                    {...createFormMethods.register('description')}
+                  />
+                  {createFormMethods.formState.errors.description && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {createFormMethods.formState.errors.description.message}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Production Capacity (units/hour) *
+                  </label>
+                  <input
+                    type="number"
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    placeholder="Enter production capacity"
+                    {...createFormMethods.register('productionCapacityPerHour', { valueAsNumber: true })}
+                  />
+                  {createFormMethods.formState.errors.productionCapacityPerHour && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {createFormMethods.formState.errors.productionCapacityPerHour.message}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Department *
+                  </label>
+                  <select
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    {...createFormMethods.register('departmentId')}
+                  >
+                    <option value="">Select department</option>
+                    {departments.map((dept) => (
+                      <option key={dept._id} value={dept._id}>
+                        {dept.name}
+                      </option>
+                    ))}
+                  </select>
+                  {createFormMethods.formState.errors.departmentId && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {createFormMethods.formState.errors.departmentId.message}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Active Status
+                  </label>
+                  <div className="flex items-center">
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="sr-only peer"
+                        {...createFormMethods.register('isActive')}
+                      />
+                      <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                      <span className={`ml-3 text-sm ${textSecondaryClass}`}>
+                        {createFormMethods.watch('isActive') ? 'Active' : 'Inactive'}
+                      </span>
+                    </label>
+                  </div>
+                </div>
+                
+                <div className="flex justify-end space-x-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setIsCreating(false)}
+                    className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
+                  >
+                    Create Mold
+                  </button>
+                </div>
+              </form>
+            </FormProvider>
           </div>
         </div>
       )}
@@ -694,111 +729,117 @@ const Molds: React.FC = () => {
               </div>
             </div>
             
-            <form onSubmit={handleUpdateMold} className="p-6 space-y-4">
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Mold Name *
-                </label>
-                <input
-                  type="text"
-                  name="name"
-                  required
-                  value={editingMold.name}
-                  onChange={handleInputChange}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  placeholder="Enter mold name"
-                />
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Description
-                </label>
-                <textarea
-                  name="description"
-                  value={editingMold.description || ''}
-                  onChange={handleInputChange}
-                  rows={3}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  placeholder="Enter mold description"
-                />
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Production Capacity (units/hour) *
-                </label>
-                <input
-                  type="number"
-                  name="productionCapacityPerHour"
-                  required
-                  min="1"
-                  value={editingMold.productionCapacityPerHour}
-                  onChange={handleNumberInputChange}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  placeholder="Enter production capacity"
-                />
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Department *
-                </label>
-                <select
-                  name="departmentId"
-                  required
-                  value={typeof editingMold.departmentId === 'string' 
-                    ? editingMold.departmentId 
-                    : editingMold.departmentId._id}
-                  onChange={handleInputChange}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                >
-                  <option value="">Select department</option>
-                  {departments.map((dept) => (
-                    <option key={dept._id} value={dept._id}>
-                      {dept.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Active Status
-                </label>
-                <div className="flex items-center">
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      name="isActive"
-                      checked={editingMold.isActive}
-                      onChange={(e) => setEditingMold({ ...editingMold, isActive: e.target.checked })}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                    <span className={`ml-3 text-sm ${textSecondaryClass}`}>
-                      {editingMold.isActive ? 'Active' : 'Inactive'}
-                    </span>
+            <FormProvider {...editFormMethods}>
+              <form onSubmit={handleUpdateMold} className="p-6 space-y-4">
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Mold Name *
                   </label>
+                  <input
+                    type="text"
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    placeholder="Enter mold name"
+                    {...editFormMethods.register('name')}
+                  />
+                  {editFormMethods.formState.errors.name && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {editFormMethods.formState.errors.name.message}
+                    </p>
+                  )}
                 </div>
-              </div>
-              
-              <div className="flex justify-end space-x-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setEditingMold(null)}
-                  className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
-                >
-                  Update Mold
-                </button>
-              </div>
-            </form>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Description
+                  </label>
+                  <textarea
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    placeholder="Enter mold description"
+                    rows={3}
+                    {...editFormMethods.register('description')}
+                  />
+                  {editFormMethods.formState.errors.description && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {editFormMethods.formState.errors.description.message}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Production Capacity (units/hour) *
+                  </label>
+                  <input
+                    type="number"
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    placeholder="Enter production capacity"
+                    {...editFormMethods.register('productionCapacityPerHour', { valueAsNumber: true })}
+                  />
+                  {editFormMethods.formState.errors.productionCapacityPerHour && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {editFormMethods.formState.errors.productionCapacityPerHour.message}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Department *
+                  </label>
+                  <select
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    {...editFormMethods.register('departmentId')}
+                  >
+                    <option value="">Select department</option>
+                    {departments.map((dept) => (
+                      <option key={dept._id} value={dept._id}>
+                        {dept.name}
+                      </option>
+                    ))}
+                  </select>
+                  {editFormMethods.formState.errors.departmentId && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {editFormMethods.formState.errors.departmentId.message}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Active Status
+                  </label>
+                  <div className="flex items-center">
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="sr-only peer"
+                        {...editFormMethods.register('isActive')}
+                      />
+                      <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                      <span className={`ml-3 text-sm ${textSecondaryClass}`}>
+                        {editFormMethods.watch('isActive') ? 'Active' : 'Inactive'}
+                      </span>
+                    </label>
+                  </div>
+                </div>
+                
+                <div className="flex justify-end space-x-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setEditingMold(null)}
+                    className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
+                  >
+                    Update Mold
+                  </button>
+                </div>
+              </form>
+            </FormProvider>
           </div>
         </div>
       )}
@@ -890,12 +931,7 @@ const Molds: React.FC = () => {
                       <div className="flex justify-end space-x-2">
                         <button
                           onClick={() => {
-                            setEditingMold({
-                              ...mold,
-                              departmentId: typeof mold.departmentId === 'object' 
-                                ? mold.departmentId._id 
-                                : mold.departmentId
-                            });
+                            setEditingMold(mold);
                           }}
                           className={`p-1 rounded-md hover:${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'} ${
                             isDarkMode 

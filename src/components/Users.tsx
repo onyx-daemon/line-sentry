@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useCallback, useContext } from 'react';
+import { useForm, FormProvider } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { useAuth } from '../context/AuthContext';
 import apiService from '../services/api';
 import {
@@ -14,7 +17,7 @@ import {
   Building2,
   Eye,
   EyeOff,
-  ChevronLeft,
+  ChevronLeft,  
   ChevronRight,
   Filter
 } from 'lucide-react';
@@ -46,6 +49,51 @@ interface UsersResponse {
   };
 }
 
+// Zod schemas
+const baseUserSchema = z.object({
+  username: z.string()
+    .min(3, "Username must be at least 3 characters")
+    .max(30, "Username cannot exceed 30 characters"),
+  email: z.string()
+    .email("Invalid email address")
+    .max(50, "Email cannot exceed 50 characters"),
+  role: z.enum(['admin', 'operator']),
+  departmentId: z.string().optional(),
+});
+
+const createUserSchema = baseUserSchema.extend({
+  password: z.string()
+    .min(6, "Password must be at least 6 characters")
+    .max(30, "Password cannot exceed 30 characters"),
+}).superRefine((data, ctx) => {
+  if (data.role === 'operator' && !data.departmentId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Department is required for operators",
+      path: ["departmentId"],
+    });
+  }
+});
+
+const editUserSchema = baseUserSchema.extend({
+  password: z.string()
+    .min(6, "Password must be at least 6 characters")
+    .max(30, "Password cannot exceed 30 characters")
+    .optional()
+    .or(z.literal('')),
+}).superRefine((data, ctx) => {
+  if (data.role === 'operator' && !data.departmentId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Department is required for operators",
+      path: ["departmentId"],
+    });
+  }
+});
+
+type CreateUserFormData = z.infer<typeof createUserSchema>;
+type EditUserFormData = z.infer<typeof editUserSchema>;
+
 const Users: React.FC = () => {
   const { isAdmin } = useAuth();
   const { isDarkMode } = useContext(ThemeContext);
@@ -67,14 +115,6 @@ const Users: React.FC = () => {
   // Modal states
   const [isCreating, setIsCreating] = useState(false);
   const [editingUser, setEditingUser] = useState<any | null>(null);
-  const [formData, setFormData] = useState({
-    username: '',
-    email: '',
-    password: '',
-    role: 'operator',
-    departmentId: '',
-    isActive: true
-  });
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [statusTogglingId, setStatusTogglingId] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
@@ -99,6 +139,60 @@ const Users: React.FC = () => {
   const buttonSecondaryClass = isDarkMode 
     ? 'border-gray-600 text-gray-300 hover:bg-gray-700' 
     : 'border-gray-300 text-gray-700 hover:bg-gray-50';
+  const errorClass = isDarkMode ? 'text-red-400' : 'text-red-600';
+
+  // React Hook Form
+  const createFormMethods = useForm<CreateUserFormData>({
+    resolver: zodResolver(createUserSchema),
+    defaultValues: {
+      username: '',
+      email: '',
+      password: '',
+      role: 'operator',
+      departmentId: '',
+    }
+  });
+
+  const editFormMethods = useForm<EditUserFormData>({
+    resolver: zodResolver(editUserSchema),
+    defaultValues: {
+      username: '',
+      email: '',
+      role: 'operator',
+      departmentId: '',
+      password: '',
+    }
+  });
+
+  // Reset create form when modal opens/closes
+  useEffect(() => {
+    if (isCreating) {
+      createFormMethods.reset({
+        username: '',
+        email: '',
+        password: '',
+        role: 'operator',
+        departmentId: '',
+      });
+    }
+  }, [isCreating]);
+
+  // Reset edit form when editing user changes
+  useEffect(() => {
+    if (editingUser) {
+      editFormMethods.reset({
+        username: editingUser.username,
+        email: editingUser.email,
+        role: editingUser.role,
+        departmentId: editingUser.departmentId 
+          ? (typeof editingUser.departmentId === 'object' 
+              ? editingUser.departmentId._id 
+              : editingUser.departmentId)
+          : '',
+        password: ''
+      });
+    }
+  }, [editingUser]);
 
   const fetchUsers = useCallback(async (page = 1, search = '', role = '', department = '', isActive = '') => {
     try {
@@ -186,41 +280,7 @@ const Users: React.FC = () => {
     setCurrentPage(1);
   };
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    
-    if (editingUser) {
-      if (name === 'role' && value !== 'operator') {
-        setEditingUser({ 
-          ...editingUser, 
-          [name]: value,
-          departmentId: ''
-        });
-      } else {
-        setEditingUser({ ...editingUser, [name]: value });
-      }
-    } else {
-      if (name === 'role' && value !== 'operator') {
-        setFormData({ 
-          ...formData, 
-          [name]: value,
-          departmentId: ''
-        });
-      } else {
-        setFormData({ ...formData, [name]: value });
-      }
-    }
-  };
-
-  useEffect(() => {
-    if (!isCreating) return;
-    if (formData.role !== 'operator') {
-      setFormData(prev => ({ ...prev, departmentId: '' }));
-    }
-  }, [formData.role, isCreating]);
-
-  const handleCreateUser = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateUser = createFormMethods.handleSubmit(async (formData) => {
     try {
       const userData: any = { ...formData };
       
@@ -230,14 +290,6 @@ const Users: React.FC = () => {
 
       await apiService.createUser(userData);
       
-      setFormData({
-        username: '',
-        email: '',
-        password: '',
-        role: 'operator',
-        departmentId: '',
-        isActive: true
-      });
       setIsCreating(false);
       toast.success("User created successfully");
       
@@ -260,27 +312,25 @@ const Users: React.FC = () => {
       
       toast.error(message);
     }
-  };
+  });
 
-  const handleUpdateUser = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleUpdateUser = editFormMethods.handleSubmit(async (formData) => {
     if (!editingUser) return;
 
     try {
       const updateData: any = {
-        username: editingUser.username,
-        email: editingUser.email,
-        role: editingUser.role,
-        isActive: editingUser.isActive
+        username: formData.username,
+        email: formData.email,
+        role: formData.role,
       };
 
       // Add password if provided
-      if (editingUser.password && editingUser.password.trim() !== '') {
-        updateData.password = editingUser.password;
+      if (formData.password && formData.password.trim() !== '') {
+        updateData.password = formData.password;
       }
 
-      if (editingUser.role === 'operator') {
-        updateData.departmentId = editingUser.departmentId;
+      if (formData.role === 'operator') {
+        updateData.departmentId = formData.departmentId;
       } else {
         updateData.departmentId = undefined;
       }
@@ -308,7 +358,7 @@ const Users: React.FC = () => {
       
       toast.error(message);
     }
-  };
+  });
 
   const handleToggleStatus = async (id: string, isActive: boolean) => {
     try {
@@ -653,119 +703,126 @@ const Users: React.FC = () => {
               </div>
             </div>
             
-            <form onSubmit={handleCreateUser} className="p-6 space-y-4">
-              <div>
-                <label htmlFor="username" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Username *
-                </label>
-                <input
-                  type="text"
-                  id="username"
-                  name="username"
-                  required
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  value={formData.username}
-                  onChange={handleInputChange}
-                />
-              </div>
-              
-              <div>
-                <label htmlFor="email" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Email *
-                </label>
-                <input
-                  type="email"
-                  id="email"
-                  name="email"
-                  required
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  value={formData.email}
-                  onChange={handleInputChange}
-                />
-              </div>
-              
-              <div>
-                <label htmlFor="password" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Password *
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    id="password"
-                    name="password"
-                    required
-                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                    value={formData.password}
-                    onChange={handleInputChange}
-                  />
-                  <button
-                    type="button"
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center"
-                    onClick={() => setShowPassword(!showPassword)}
-                  >
-                    {showPassword ? (
-                      <EyeOff className="h-5 w-5 text-gray-400" />
-                    ) : (
-                      <Eye className="h-5 w-5 text-gray-400" />
-                    )}
-                  </button>
-                </div>
-              </div>
-              
-              <div>
-                <label htmlFor="role" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Role *
-                </label>
-                <select
-                  id="role"
-                  name="role"
-                  required
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  value={formData.role}
-                  onChange={handleInputChange}
-                >
-                  <option value="admin">Admin</option>
-                  <option value="operator">Operator</option>
-                </select>
-              </div>
-              
-              {formData.role === 'operator' && (
+            <FormProvider {...createFormMethods}>
+              <form onSubmit={handleCreateUser} className="p-6 space-y-4">
                 <div>
-                  <label htmlFor="departmentId" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                    Department *
+                  <label htmlFor="username" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Username *
+                  </label>
+                  <input
+                    type="text"
+                    id="username"
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    {...createFormMethods.register('username')}
+                  />
+                  {createFormMethods.formState.errors.username && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {createFormMethods.formState.errors.username.message}
+                    </p>
+                  )}
+                </div>
+                
+                <div>
+                  <label htmlFor="email" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Email *
+                  </label>
+                  <input
+                    type="email"
+                    id="email"
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    {...createFormMethods.register('email')}
+                  />
+                  {createFormMethods.formState.errors.email && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {createFormMethods.formState.errors.email.message}
+                    </p>
+                  )}
+                </div>
+                
+                <div>
+                  <label htmlFor="password" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Password *
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      id="password"
+                      className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                      {...createFormMethods.register('password')}
+                    />
+                    <button
+                      type="button"
+                      className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                      onClick={() => setShowPassword(!showPassword)}
+                    >
+                      {showPassword ? (
+                        <EyeOff className="h-5 w-5 text-gray-400" />
+                      ) : (
+                        <Eye className="h-5 w-5 text-gray-400" />
+                      )}
+                    </button>
+                  </div>
+                  {createFormMethods.formState.errors.password && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {createFormMethods.formState.errors.password.message}
+                    </p>
+                  )}
+                </div>
+                
+                <div>
+                  <label htmlFor="role" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Role *
                   </label>
                   <select
-                    id="departmentId"
-                    name="departmentId"
-                    required
+                    id="role"
                     className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                    value={formData.departmentId}
-                    onChange={handleInputChange}
+                    {...createFormMethods.register('role')}
                   >
-                    <option value="">Select Department</option>
-                    {departments.map(dept => (
-                      <option key={dept._id} value={dept._id}>{dept.name}</option>
-                    ))}
+                    <option value="admin">Admin</option>
+                    <option value="operator">Operator</option>
                   </select>
                 </div>
-              )}
-              
-              <div className="flex justify-end space-x-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setIsCreating(false)}
-                  className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
-                >
-                  Create User
-                </button>
-              </div>
-            </form>
+                
+                {createFormMethods.watch('role') === 'operator' && (
+                  <div>
+                    <label htmlFor="departmentId" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                      Department *
+                    </label>
+                    <select
+                      id="departmentId"
+                      className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                      {...createFormMethods.register('departmentId')}
+                    >
+                      <option value="">Select Department</option>
+                      {departments.map(dept => (
+                        <option key={dept._id} value={dept._id}>{dept.name}</option>
+                      ))}
+                    </select>
+                    {createFormMethods.formState.errors.departmentId && (
+                      <p className={`mt-1 text-sm ${errorClass}`}>
+                        {createFormMethods.formState.errors.departmentId.message}
+                      </p>
+                    )}
+                  </div>
+                )}
+                
+                <div className="flex justify-end space-x-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setIsCreating(false)}
+                    className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
+                  >
+                    Create User
+                  </button>
+                </div>
+              </form>
+            </FormProvider>
           </div>
         </div>
       )}
@@ -786,122 +843,130 @@ const Users: React.FC = () => {
               </div>
             </div>
             
-            <form onSubmit={handleUpdateUser} className="p-6 space-y-4">
-              <div>
-                <label htmlFor="edit-username" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Username *
-                </label>
-                <input
-                  type="text"
-                  id="edit-username"
-                  name="username"
-                  required
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  value={editingUser.username}
-                  onChange={handleInputChange}
-                />
-              </div>
-              
-              <div>
-                <label htmlFor="edit-email" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Email *
-                </label>
-                <input
-                  type="email"
-                  id="edit-email"
-                  name="email"
-                  required
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  value={editingUser.email}
-                  onChange={handleInputChange}
-                />
-              </div>
-              
-              <div>
-                <label htmlFor="edit-password" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  New Password
-                </label>
-                <div className="relative">
-                  <input
-                    type={showEditPassword ? "text" : "password"}
-                    id="edit-password"
-                    name="password"
-                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                    value={editingUser.password || ''}
-                    onChange={handleInputChange}
-                    placeholder="Leave blank to keep current password"
-                  />
-                  <button
-                    type="button"
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center"
-                    onClick={() => setShowEditPassword(!showEditPassword)}
-                  >
-                    {showEditPassword ? (
-                      <EyeOff className="h-5 w-5 text-gray-400" />
-                    ) : (
-                      <Eye className="h-5 w-5 text-gray-400" />
-                    )}
-                  </button>
-                </div>
-                <p className={`text-xs mt-1 ${textSecondaryClass}`}>
-                  Only enter a value if you want to change the password
-                </p>
-              </div>
-              
-              <div>
-                <label htmlFor="edit-role" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Role *
-                </label>
-                <select
-                  id="edit-role"
-                  name="role"
-                  required
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  value={editingUser.role}
-                  onChange={handleInputChange}
-                >
-                  <option value="admin">Admin</option>
-                  <option value="operator">Operator</option>
-                </select>
-              </div>
-              
-              {editingUser.role === 'operator' && (
+            <FormProvider {...editFormMethods}>
+              <form onSubmit={handleUpdateUser} className="p-6 space-y-4">
                 <div>
-                  <label htmlFor="edit-departmentId" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                    Department *
+                  <label htmlFor="edit-username" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Username *
+                  </label>
+                  <input
+                    type="text"
+                    id="edit-username"
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    {...editFormMethods.register('username')}
+                  />
+                  {editFormMethods.formState.errors.username && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {editFormMethods.formState.errors.username.message}
+                    </p>
+                  )}
+                </div>
+                
+                <div>
+                  <label htmlFor="edit-email" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Email *
+                  </label>
+                  <input
+                    type="email"
+                    id="edit-email"
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    {...editFormMethods.register('email')}
+                  />
+                  {editFormMethods.formState.errors.email && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {editFormMethods.formState.errors.email.message}
+                    </p>
+                  )}
+                </div>
+                
+                <div>
+                  <label htmlFor="edit-password" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    New Password
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showEditPassword ? "text" : "password"}
+                      id="edit-password"
+                      className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                      {...editFormMethods.register('password')}
+                      placeholder="Leave blank to keep current password"
+                    />
+                    <button
+                      type="button"
+                      className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                      onClick={() => setShowEditPassword(!showEditPassword)}
+                    >
+                      {showEditPassword ? (
+                        <EyeOff className="h-5 w-5 text-gray-400" />
+                      ) : (
+                        <Eye className="h-5 w-5 text-gray-400" />
+                      )}
+                    </button>
+                  </div>
+                  {editFormMethods.formState.errors.password && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {editFormMethods.formState.errors.password.message}
+                    </p>
+                  )}
+                  <p className={`text-xs mt-1 ${textSecondaryClass}`}>
+                    Only enter a value if you want to change the password
+                  </p>
+                </div>
+                
+                <div>
+                  <label htmlFor="edit-role" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Role *
                   </label>
                   <select
-                    id="edit-departmentId"
-                    name="departmentId"
-                    required
+                    id="edit-role"
                     className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                    value={editingUser.departmentId || ''}
-                    onChange={handleInputChange}
+                    {...editFormMethods.register('role')}
                   >
-                    <option value="">Select Department</option>
-                    {departments.map(dept => (
-                      <option key={dept._id} value={dept._id}>{dept.name}</option>
-                    ))}
+                    <option value="admin">Admin</option>
+                    <option value="operator">Operator</option>
                   </select>
                 </div>
-              )}
-              
-              <div className="flex justify-end space-x-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setEditingUser(null)}
-                  className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
-                >
-                  Update User
-                </button>
-              </div>
-            </form>
+                
+                {editFormMethods.watch('role') === 'operator' && (
+                  <div>
+                    <label htmlFor="edit-departmentId" className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                      Department *
+                    </label>
+                    <select
+                      id="edit-departmentId"
+                      className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                      {...editFormMethods.register('departmentId')}
+                    >
+                      <option value="">Select Department</option>
+                      {departments.map(dept => (
+                        <option key={dept._id} value={dept._id}>{dept.name}</option>
+                      ))}
+                    </select>
+                    {editFormMethods.formState.errors.departmentId && (
+                      <p className={`mt-1 text-sm ${errorClass}`}>
+                        {editFormMethods.formState.errors.departmentId.message}
+                      </p>
+                    )}
+                  </div>
+                )}
+                
+                <div className="flex justify-end space-x-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setEditingUser(null)}
+                    className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
+                  >
+                    Update User
+                  </button>
+                </div>
+              </form>
+            </FormProvider>
           </div>
         </div>
       )}

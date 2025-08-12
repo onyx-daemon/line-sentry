@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useCallback, useContext } from 'react';
+import { useForm, FormProvider, useFormContext, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { useAuth } from '../context/AuthContext';
 import { Sensor, Machine, Department } from '../types';
 import apiService from '../services/api';
@@ -49,13 +52,21 @@ interface SensorsResponse {
   };
 }
 
-interface SensorFormData {
-  name: string;
-  description: string;
-  machineId: string;
-  sensorType: 'power' | 'unit-cycle';
-  isActive: boolean;
-}
+// Zod schema for sensor form validation
+const sensorFormSchema = z.object({
+  name: z.string()
+    .min(1, "Name is required")
+    .max(50, "Name cannot exceed 50 characters"),
+  description: z.string()
+    .max(200, "Description cannot exceed 200 characters")
+    .optional(),
+  machineId: z.string()
+    .min(1, "Machine is required"),
+  sensorType: z.enum(['power', 'unit-cycle', 'temperature', 'pressure', 'vibration']),
+  isActive: z.boolean()
+});
+
+type SensorFormData = z.infer<typeof sensorFormSchema>;
 
 const Sensors: React.FC = () => {
   const { isAdmin } = useAuth();
@@ -80,6 +91,7 @@ const Sensors: React.FC = () => {
   const buttonSecondaryClass = isDarkMode 
     ? 'border-gray-600 text-gray-300 hover:bg-gray-700' 
     : 'border-gray-300 text-gray-700 hover:bg-gray-50';
+  const errorClass = isDarkMode ? 'text-red-400' : 'text-red-600';
 
   // Pagination and filtering states
   const [currentPage, setCurrentPage] = useState(1);
@@ -95,18 +107,52 @@ const Sensors: React.FC = () => {
   // Modal states
   const [showForm, setShowForm] = useState(false);
   const [editingSensor, setEditingSensor] = useState<Sensor | null>(null);
-  const [formData, setFormData] = useState<SensorFormData>({
-    name: '',
-    description: '',
-    machineId: '',
-    sensorType: 'power',
-    isActive: true
-  });
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [statusTogglingId, setStatusTogglingId] = useState<string | null>(null);
 
   // Debounced search
   const [searchTimeout, setSearchTimeout] = useState<NodeJS.Timeout | null>(null);
+
+  // React Hook Form
+  const formMethods = useForm<SensorFormData>({
+    resolver: zodResolver(sensorFormSchema),
+    defaultValues: {
+      name: '',
+      description: '',
+      machineId: '',
+      sensorType: 'power',
+      isActive: true
+    }
+  });
+
+  // Reset form when modal opens/closes or when editing sensor changes
+  useEffect(() => {
+    if (showForm) {
+      if (editingSensor) {
+        const machine = editingSensor.machineId as Machine;
+        const department = machine.departmentId as Department;
+        
+        formMethods.reset({
+          name: editingSensor.name,
+          description: editingSensor.description || '',
+          machineId: machine._id,
+          isActive: editingSensor.isActive,
+          sensorType: editingSensor.sensorType as any
+        });
+        
+        setDepartmentFilter(department._id);
+      } else {
+        formMethods.reset({
+          name: '',
+          description: '',
+          machineId: '',
+          sensorType: 'power',
+          isActive: true
+        });
+        setDepartmentFilter('');
+      }
+    }
+  }, [showForm, editingSensor]);
 
   const fetchData = useCallback(async (page = 1, search = '', department = '', status = '', sensorType = '') => {
     try {
@@ -187,9 +233,7 @@ const Sensors: React.FC = () => {
     setSearchTerm(e.target.value);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
+  const handleSubmit = formMethods.handleSubmit(async (formData) => {
     try {
       if (editingSensor) {
         await apiService.updateSensor(editingSensor._id, formData);
@@ -214,22 +258,10 @@ const Sensors: React.FC = () => {
       
       toast.error(message);
     }
-  };
+  });
 
   const handleEdit = (sensor: Sensor) => {
     setEditingSensor(sensor);
-    const machine = (sensor.machineId as Machine);
-    const department = (machine.departmentId as Department);
-    
-    setFormData({
-      name: sensor.name,
-      description: sensor.description || '',
-      machineId: machine._id,
-      isActive: sensor.isActive,
-      sensorType: sensor.sensorType as any
-    });
-    
-    setDepartmentFilter(department._id);
     setShowForm(true);
   };
 
@@ -272,16 +304,9 @@ const Sensors: React.FC = () => {
   };
 
   const resetForm = () => {
-    setFormData({
-      name: '',
-      description: '',
-      machineId: '',
-      isActive: true,
-      sensorType: 'power'
-    });
+    setShowForm(false);
     setEditingSensor(null);
     setDepartmentFilter('');
-    setShowForm(false);
   };
 
   const getSensorIcon = (type: string) => {
@@ -608,126 +633,140 @@ const Sensors: React.FC = () => {
               </div>
             </div>
             
-            <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Sensor Name *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  placeholder="Enter sensor name"
-                />
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Description
-                </label>
-                <textarea
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  rows={3}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  placeholder="Enter sensor description"
-                />
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Sensor Type *
-                </label>
-                <select
-                  required
-                  value={formData.sensorType}
-                  onChange={(e) => setFormData({ ...formData, sensorType: e.target.value as any })}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                >
-                  <option value="power">Power Sensor</option>
-                  <option value="unit-cycle">Unit Cycle Sensor</option>
-                </select>
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Department *
-                </label>
-                <select
-                  required
-                  value={departmentFilter}
-                  onChange={(e) => setDepartmentFilter(e.target.value)}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                >
-                  <option value="">Select department</option>
-                  {departments.map((dept) => (
-                    <option key={dept._id} value={dept._id}>
-                      {dept.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Machine *
-                </label>
-                <select
-                  required
-                  value={formData.machineId}
-                  onChange={(e) => setFormData({ ...formData, machineId: e.target.value })}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  disabled={!departmentFilter}
-                >
-                  <option value="">Select machine</option>
-                  {departments
-                    .find(d => d._id === departmentFilter)
-                    ?.machines?.map((machine) => (
-                      <option key={machine._id} value={machine._id}>
-                        {machine.name}
-                      </option>
-                    )) || []}
-                </select>
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Active Status
-                </label>
-                <div className="flex items-center">
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.isActive}
-                      onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                    <span className={`ml-3 text-sm ${textSecondaryClass}`}>
-                      {formData.isActive ? 'Active' : 'Inactive'}
-                    </span>
+            <FormProvider {...formMethods}>
+              <form onSubmit={handleSubmit} className="p-6 space-y-4">
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Sensor Name *
                   </label>
+                  <input
+                    type="text"
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    placeholder="Enter sensor name"
+                    {...formMethods.register('name')}
+                  />
+                  {formMethods.formState.errors.name && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {formMethods.formState.errors.name.message}
+                    </p>
+                  )}
                 </div>
-              </div>
-              
-              <div className="flex justify-end space-x-3 pt-4">
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
-                >
-                  {editingSensor ? 'Update Sensor' : 'Create Sensor'}
-                </button>
-              </div>
-            </form>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Description
+                  </label>
+                  <textarea
+                    rows={3}
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    placeholder="Enter sensor description"
+                    {...formMethods.register('description')}
+                  />
+                  {formMethods.formState.errors.description && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {formMethods.formState.errors.description.message}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Sensor Type *
+                  </label>
+                  <select
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    {...formMethods.register('sensorType')}
+                  >
+                    <option value="power">Power Sensor</option>
+                    <option value="unit-cycle">Unit Cycle Sensor</option>
+                    <option value="temperature">Temperature Sensor</option>
+                    <option value="pressure">Pressure Sensor</option>
+                    <option value="vibration">Vibration Sensor</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Department *
+                  </label>
+                  <select
+                    value={departmentFilter}
+                    onChange={(e) => {
+                      setDepartmentFilter(e.target.value);
+                      formMethods.setValue('machineId', '');
+                    }}
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                  >
+                    <option value="">Select department</option>
+                    {departments.map((dept) => (
+                      <option key={dept._id} value={dept._id}>
+                        {dept.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Machine *
+                  </label>
+                  <select
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    disabled={!departmentFilter}
+                    {...formMethods.register('machineId')}
+                  >
+                    <option value="">Select machine</option>
+                    {departments
+                      .find(d => d._id === departmentFilter)
+                      ?.machines?.map((machine) => (
+                        <option key={machine._id} value={machine._id}>
+                          {machine.name}
+                        </option>
+                      )) || []}
+                  </select>
+                  {formMethods.formState.errors.machineId && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {formMethods.formState.errors.machineId.message}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Active Status
+                  </label>
+                  <div className="flex items-center">
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="sr-only peer"
+                        {...formMethods.register('isActive')}
+                      />
+                      <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                      <span className={`ml-3 text-sm ${textSecondaryClass}`}>
+                        {formMethods.watch('isActive') ? 'Active' : 'Inactive'}
+                      </span>
+                    </label>
+                  </div>
+                </div>
+                
+                <div className="flex justify-end space-x-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={resetForm}
+                    className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
+                  >
+                    {editingSensor ? 'Update Sensor' : 'Create Sensor'}
+                  </button>
+                </div>
+              </form>
+            </FormProvider>
           </div>
         </div>
       )}

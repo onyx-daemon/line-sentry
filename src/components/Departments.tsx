@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useCallback, useContext } from 'react';
+import { useForm, FormProvider } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Department } from '../types';
@@ -42,6 +45,18 @@ interface DepartmentsResponse {
   };
 }
 
+// Zod schemas
+const departmentSchema = z.object({
+  name: z.string()
+    .min(3, "Name must be at least 3 characters")
+    .max(50, "Name cannot exceed 50 characters"),
+  description: z.string()
+    .max(200, "Description cannot exceed 200 characters")
+    .optional(),
+});
+
+type DepartmentFormData = z.infer<typeof departmentSchema>;
+
 const Departments: React.FC = () => {
   const { isAdmin } = useAuth();
   const { isDarkMode } = useContext(ThemeContext);
@@ -59,10 +74,6 @@ const Departments: React.FC = () => {
   // Modal states
   const [isCreating, setIsCreating] = useState(false);
   const [editingDepartment, setEditingDepartment] = useState<Department | null>(null);
-  const [formData, setFormData] = useState({
-    name: '',
-    description: ''
-  });
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [statusTogglingId, setStatusTogglingId] = useState<string | null>(null);
   
@@ -89,6 +100,40 @@ const Departments: React.FC = () => {
   const buttonSecondaryClass = isDarkMode 
     ? 'border-gray-600 text-gray-300 hover:bg-gray-700' 
     : 'border-gray-300 text-gray-700 hover:bg-gray-50';
+  const errorClass = isDarkMode ? 'text-red-400' : 'text-red-600';
+
+  // React Hook Form
+  const createFormMethods = useForm<DepartmentFormData>({
+    resolver: zodResolver(departmentSchema),
+    defaultValues: {
+      name: '',
+      description: ''
+    }
+  });
+
+  const editFormMethods = useForm<DepartmentFormData>({
+    resolver: zodResolver(departmentSchema),
+    defaultValues: {
+      name: '',
+      description: ''
+    }
+  });
+
+  // Reset forms when modals open/close
+  useEffect(() => {
+    if (isCreating) {
+      createFormMethods.reset();
+    }
+  }, [isCreating]);
+
+  useEffect(() => {
+    if (editingDepartment) {
+      editFormMethods.reset({
+        name: editingDepartment.name,
+        description: editingDepartment.description || ''
+      });
+    }
+  }, [editingDepartment]);
 
   const fetchData = useCallback(async (page = 1, search = '', isActive = '') => {
     try {
@@ -156,17 +201,7 @@ const Departments: React.FC = () => {
     setCurrentPage(1);
   };
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    const { name, value } = e.target;
-    if (editingDepartment) {
-      setEditingDepartment({ ...editingDepartment, [name]: value });
-    } else {
-      setFormData({ ...formData, [name]: value });
-    }
-  };
-
-  const handleCreateDepartment = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateDepartment = createFormMethods.handleSubmit(async (formData) => {
     try {
       await apiService.createDepartment(formData);
       toast.success('Department created successfully');
@@ -174,19 +209,17 @@ const Departments: React.FC = () => {
       // Refresh the current page
       fetchData(currentPage, searchTerm, statusFilter);
       setIsCreating(false);
-      setFormData({ name: '', description: '' });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create department';
       toast.error(message);
     }
-  };
+  });
 
-  const handleUpdateDepartment = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleUpdateDepartment = editFormMethods.handleSubmit(async (formData) => {
     if (!editingDepartment) return;
     
     try {
-      await apiService.updateDepartment(editingDepartment._id, editingDepartment);
+      await apiService.updateDepartment(editingDepartment._id, formData);
       toast.success('Department updated successfully');
       
       // Refresh the current page
@@ -196,7 +229,7 @@ const Departments: React.FC = () => {
       const message = err instanceof Error ? err.message : 'Failed to update department';
       toast.error(message);
     }
-  };
+  });
 
   const handleToggleStatus = async (id: string, isActive: boolean) => {
     try {
@@ -507,50 +540,57 @@ const Departments: React.FC = () => {
               </div>
             </div>
             
-            <form onSubmit={handleCreateDepartment} className="p-6 space-y-4">
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Department Name *
-                </label>
-                <input
-                  type="text"
-                  name="name"
-                  required
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  value={formData.name}
-                  onChange={handleInputChange}
-                />
-              </div>
-              
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Description
-                </label>
-                <textarea
-                  name="description"
-                  rows={3}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  value={formData.description}
-                  onChange={handleInputChange}
-                />
-              </div>
-              
-              <div className="flex justify-end space-x-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setIsCreating(false)}
-                  className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
-                >
-                  Create Department
-                </button>
-              </div>
-            </form>
+            <FormProvider {...createFormMethods}>
+              <form onSubmit={handleCreateDepartment} className="p-6 space-y-4">
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Department Name *
+                  </label>
+                  <input
+                    type="text"
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    {...createFormMethods.register('name')}
+                  />
+                  {createFormMethods.formState.errors.name && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {createFormMethods.formState.errors.name.message}
+                    </p>
+                  )}
+                </div>
+                
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Description
+                  </label>
+                  <textarea
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    rows={3}
+                    {...createFormMethods.register('description')}
+                  />
+                  {createFormMethods.formState.errors.description && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {createFormMethods.formState.errors.description.message}
+                    </p>
+                  )}
+                </div>
+                
+                <div className="flex justify-end space-x-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setIsCreating(false)}
+                    className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
+                  >
+                    Create Department
+                  </button>
+                </div>
+              </form>
+            </FormProvider>
           </div>
         </div>
       )}
@@ -571,50 +611,57 @@ const Departments: React.FC = () => {
               </div>
             </div>
             
-            <form onSubmit={handleUpdateDepartment} className="p-6 space-y-4">
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Department Name *
-                </label>
-                <input
-                  type="text"
-                  name="name"
-                  required
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  value={editingDepartment.name}
-                  onChange={handleInputChange}
-                />
-              </div>
-              
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Description
-                </label>
-                <textarea
-                  name="description"
-                  rows={3}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  value={editingDepartment.description || ''}
-                  onChange={handleInputChange}
-                />
-              </div>
-              
-              <div className="flex justify-end space-x-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setEditingDepartment(null)}
-                  className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
-                >
-                  Update Department
-                </button>
-              </div>
-            </form>
+            <FormProvider {...editFormMethods}>
+              <form onSubmit={handleUpdateDepartment} className="p-6 space-y-4">
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Department Name *
+                  </label>
+                  <input
+                    type="text"
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    {...editFormMethods.register('name')}
+                  />
+                  {editFormMethods.formState.errors.name && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {editFormMethods.formState.errors.name.message}
+                    </p>
+                  )}
+                </div>
+                
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
+                    Description
+                  </label>
+                  <textarea
+                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    rows={3}
+                    {...editFormMethods.register('description')}
+                  />
+                  {editFormMethods.formState.errors.description && (
+                    <p className={`mt-1 text-sm ${errorClass}`}>
+                      {editFormMethods.formState.errors.description.message}
+                    </p>
+                  )}
+                </div>
+                
+                <div className="flex justify-end space-x-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setEditingDepartment(null)}
+                    className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md`}
+                  >
+                    Update Department
+                  </button>
+                </div>
+              </form>
+            </FormProvider>
           </div>
         </div>
       )}
