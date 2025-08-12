@@ -242,7 +242,7 @@ const Molds: React.FC = () => {
   const handleCreateMold = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const newMold = await apiService.createMold(formData);
+      await apiService.createMold(formData);
       toast.success('Mold created successfully');
       
       // Refresh the current page
@@ -266,7 +266,7 @@ const Molds: React.FC = () => {
     if (!editingMold) return;
     
     try {
-      const updatedMold = await apiService.updateMold(editingMold._id, editingMold);
+      await apiService.updateMold(editingMold._id, editingMold);
       toast.success('Mold updated successfully');
       
       // Refresh the current page

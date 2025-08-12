@@ -2,14 +2,15 @@ const express = require('express');
 const Sensor = require('../models/Sensor');
 const SensorPinMapping = require('../models/SensorPinMapping');
 const { auth, adminAuth } = require('../middleware/auth');
-const Machine = require('../models/Machine')
+const Machine = require('../models/Machine');
+const mongoose = require('mongoose');
 
 const router = express.Router();
 
 // Get all sensors
 router.get('/', auth, async (req, res) => {
   try {
-    const sensors = await Sensor.find({ isActive: true }).populate('machineId');
+    const sensors = await Sensor.find({ isActive: true }).populate('machineId').lean();
     res.json(sensors);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -35,53 +36,84 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    // Build the base query
-    let query = {};
+    // Build aggregation pipeline for better performance
+    let pipeline = [];
 
-    // Text search across multiple fields
+    // Match stage for filtering
+    let matchStage = {};
+    
     if (search.trim()) {
-      query.$or = [
+      matchStage.$or = [
         { name: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } },
         { sensorType: { $regex: search, $options: 'i' } }
       ];
     }
 
-    // Filter by department
-    if (department.trim()) {
-      // We need to get the machine IDs that belong to this department
-      const machinesInDepartment = await Machine.find({ departmentId: department }).select('_id');
-      const machineIds = machinesInDepartment.map(m => m._id);
-      query.machineId = { $in: machineIds };
-    }
-
-    // Filter by status
+    // Filter by active status
     if (status !== '') {
-      query.isActive = status === 'true';
+      matchStage.isActive = status === 'true';
     }
 
     // Filter by sensor type
     if (sensorType.trim()) {
-      query.sensorType = sensorType;
+      matchStage.sensorType = sensorType;
+    }
+
+    pipeline.push({ $match: matchStage });
+
+    // Lookup machine and department data
+    pipeline.push({
+      $lookup: {
+        from: 'machines',
+        localField: 'machineId',
+        foreignField: '_id',
+        as: 'machineId',
+        pipeline: [
+          {
+            $lookup: {
+              from: 'departments',
+              localField: 'departmentId',
+              foreignField: '_id',
+              as: 'departmentId'
+            }
+          },
+          { $unwind: '$departmentId' }
+        ]
+      }
+    });
+    
+    pipeline.push({ $unwind: '$machineId' });
+
+    // Filter by department after lookup
+    if (department.trim()) {
+      pipeline.push({
+        $match: {
+          'machineId.departmentId._id': new mongoose.Types.ObjectId(department)
+        }
+      });
     }
 
     // Build sort object
     const sortObj = {};
     sortObj[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
-    // Execute query to get paginated results
-    const sensorsQuery = Sensor.find(query)
-      .populate({
-        path: 'machineId',
-        populate: { path: 'departmentId' }
-      })
-      .sort(sortObj)
-      .skip(skip)
-      .limit(limitNum);
+    // Add sort, skip, and limit
+    pipeline.push({ $sort: sortObj });
+    
+    // Get total count before pagination
+    const countPipeline = [...pipeline, { $count: "total" }];
+    
+    // Add pagination
+    pipeline.push({ $skip: skip });
+    pipeline.push({ $limit: limitNum });
 
-    const totalSensorsQuery = Sensor.countDocuments(query);
+    const [sensors, totalResult] = await Promise.all([
+      Sensor.aggregate(pipeline),
+      Sensor.aggregate(countPipeline)
+    ]);
 
-    const [sensors, totalSensors] = await Promise.all([sensorsQuery, totalSensorsQuery]);
+    const totalSensors = totalResult[0]?.total || 0;
 
     // Calculate pagination info
     const totalPages = Math.ceil(totalSensors / limitNum);
@@ -120,7 +152,7 @@ router.get('/machine/:machineId', auth, async (req, res) => {
     const sensors = await Sensor.find({ 
       machineId: req.params.machineId, 
       isActive: true 
-    }).populate('machineId');
+    }).populate('machineId').lean();
     res.json(sensors);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -203,11 +235,28 @@ router.post('/pin-mapping', auth, adminAuth, async (req, res) => {
 // Get pin mappings
 router.get('/pin-mappings', auth, adminAuth, async (req, res) => {
   try {
-    const mappings = await SensorPinMapping.find({})
-      .populate({
-        path: 'sensorId',
-        populate: { path: 'machineId' }  // Populate machineId for sensor
-      });
+    const mappings = await SensorPinMapping.aggregate([
+      {
+        $lookup: {
+          from: 'sensors',
+          localField: 'sensorId',
+          foreignField: '_id',
+          as: 'sensorId',
+          pipeline: [
+            {
+              $lookup: {
+                from: 'machines',
+                localField: 'machineId',
+                foreignField: '_id',
+                as: 'machineId'
+              }
+            },
+            { $unwind: '$machineId' }
+          ]
+        }
+      },
+      { $unwind: '$sensorId' }
+    ]);
     res.json(mappings);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });

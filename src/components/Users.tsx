@@ -285,7 +285,7 @@ const Users: React.FC = () => {
         updateData.departmentId = undefined;
       }
 
-      await apiService.updateUser(editingUser.id, updateData);
+      await apiService.updateUser(editingUser._id, updateData);
       setEditingUser(null);
       toast.success("User updated successfully");
       
@@ -938,7 +938,7 @@ const Users: React.FC = () => {
               {users.length > 0 ? (
                 users.map((user) => (
                   <tr 
-                    key={user.id} 
+                    key={user._id} 
                     className={`${tableRowHoverClass} ${!user.isActive ? 'opacity-70' : ''}`}
                   >
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -1018,7 +1018,7 @@ const Users: React.FC = () => {
                               e.stopPropagation();
                               setEditingUser({
                                 ...user,
-                                _id: user.id,
+                                _id: user._id,
                                 departmentId: user.departmentId 
                                   ? (typeof user.departmentId === 'object' 
                                       ? user.departmentId._id 
@@ -1039,11 +1039,11 @@ const Users: React.FC = () => {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleToggleStatus(user.id, user.isActive);
+                              handleToggleStatus(user._id, user.isActive);
                             }}
-                            disabled={statusTogglingId === user.id}
+                            disabled={statusTogglingId === user._id}
                             className={`p-1 rounded-md hover:${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'} ${
-                              statusTogglingId === user.id ? 'opacity-50' : ''
+                              statusTogglingId === user._id ? 'opacity-50' : ''
                             } ${
                               user.isActive 
                                 ? isDarkMode 
@@ -1055,7 +1055,7 @@ const Users: React.FC = () => {
                             }`}
                             title={user.isActive ? 'Deactivate' : 'Activate'}
                           >
-                            {statusTogglingId === user.id ? (
+                            {statusTogglingId === user._id ? (
                               <Loader className="h-4 w-4 animate-spin" />
                             ) : user.isActive ? (
                               <PowerOff className="h-4 w-4" />
@@ -1066,11 +1066,11 @@ const Users: React.FC = () => {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleDeleteUser(user.id);
+                              handleDeleteUser(user._id);
                             }}
-                            disabled={deletingId === user.id}
+                            disabled={deletingId === user._id}
                             className={`p-1 rounded-md hover:${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'} ${
-                              deletingId === user.id ? 'opacity-50' : ''
+                              deletingId === user._id ? 'opacity-50' : ''
                             } ${
                               isDarkMode 
                                 ? 'text-red-400 hover:text-red-300' 
@@ -1078,7 +1078,7 @@ const Users: React.FC = () => {
                             }`}
                             title="Delete permanently"
                           >
-                            {deletingId === user.id ? (
+                            {deletingId === user._id ? (
                               <Loader className="h-4 w-4 animate-spin" />
                             ) : (
                               <Trash2 className="h-4 w-4" />

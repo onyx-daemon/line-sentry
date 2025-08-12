@@ -52,6 +52,27 @@ const reportSchema = new mongoose.Schema({
       totalStoppages: Number
     }
   }],
+  departmentData: [{
+  departmentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Department',
+    required: true
+  },
+  departmentName: String,
+  metrics: {
+    oee: Number,
+    mtbf: Number,
+    mttr: Number,
+    availability: Number,
+    quality: Number,
+    performance: Number,
+    totalUnitsProduced: Number,
+    totalDefectiveUnits: Number,
+    totalRunningMinutes: Number,
+    totalStoppageMinutes: Number,
+    totalStoppages: Number
+  }
+  }],
   shiftData: [{
     shiftName: String,
     startTime: String,

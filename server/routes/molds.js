@@ -13,7 +13,7 @@ router.get('/', auth, async (req, res) => {
       query.departmentId = req.user.departmentId._id;
     }
 
-    const molds = await Mold.find(query).populate('departmentId');
+    const molds = await Mold.find(query).populate('departmentId').lean();
     res.json(molds);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -38,12 +38,13 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    // Build search query
-    let query = {};
+    // Build aggregation pipeline
+    let pipeline = [];
+    let matchStage = {};
 
     // Text search across name, description
     if (search.trim()) {
-      query.$or = [
+      matchStage.$or = [
         { name: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } }
       ];
@@ -51,27 +52,48 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
 
     // Filter by department
     if (department.trim()) {
-      query.departmentId = department;
+      matchStage.departmentId = new mongoose.Types.ObjectId(department);
     }
 
     // Filter by active status
     if (isActive !== '') {
-      query.isActive = isActive === 'true';
+      matchStage.isActive = isActive === 'true';
     }
+
+    pipeline.push({ $match: matchStage });
+
+    // Lookup department data
+    pipeline.push({
+      $lookup: {
+        from: 'departments',
+        localField: 'departmentId',
+        foreignField: '_id',
+        as: 'departmentId'
+      }
+    });
+    
+    pipeline.push({ $unwind: '$departmentId' });
 
     // Build sort object
     const sortObj = {};
     sortObj[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
-    // Execute queries
-    const [molds, totalMolds] = await Promise.all([
-      Mold.find(query)
-        .populate('departmentId')
-        .sort(sortObj)
-        .skip(skip)
-        .limit(limitNum),
-      Mold.countDocuments(query)
+    // Add sort
+    pipeline.push({ $sort: sortObj });
+    
+    // Get total count before pagination
+    const countPipeline = [...pipeline, { $count: "total" }];
+    
+    // Add pagination
+    pipeline.push({ $skip: skip });
+    pipeline.push({ $limit: limitNum });
+
+    const [molds, totalResult] = await Promise.all([
+      Mold.aggregate(pipeline),
+      Mold.aggregate(countPipeline)
     ]);
+
+    const totalMolds = totalResult[0]?.total || 0;
 
     // Calculate pagination info
     const totalPages = Math.ceil(totalMolds / limitNum);

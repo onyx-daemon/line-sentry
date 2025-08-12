@@ -21,7 +21,7 @@ const unclassifiedStoppages = new Map(); // Track unclassified stoppages
 // Get configuration for timeouts
 const getSignalTimeouts = async () => {
   try {
-    const config = await Config.findOne();
+    const config = await Config.findOne().lean();
     return {
       powerTimeout: (config?.signalTimeouts?.powerSignalTimeout || 5) * 60 * 1000, // 5 minutes default
       cycleTimeout: (config?.signalTimeouts?.cycleSignalTimeout || 2) * 60 * 1000   // 2 minutes default
@@ -49,16 +49,39 @@ router.post('/pin-data', async (req, res) => {
     console.log(`Received pin data: ${pinData} (${byteValue.toString(2).padStart(8, '0')})`);
 
     // Get all pin mappings
-    const pinMappings = await SensorPinMapping.find({})
-      .populate({
-        path: 'sensorId',
-        populate: {
-          path: 'machineId',
-          populate: {
-            path: 'departmentId'
-          }
+    const pinMappings = await SensorPinMapping.aggregate([
+      {
+        $lookup: {
+          from: 'sensors',
+          localField: 'sensorId',
+          foreignField: '_id',
+          as: 'sensorId',
+          pipeline: [
+            {
+              $lookup: {
+                from: 'machines',
+                localField: 'machineId',
+                foreignField: '_id',
+                as: 'machineId',
+                pipeline: [
+                  {
+                    $lookup: {
+                      from: 'departments',
+                      localField: 'departmentId',
+                      foreignField: '_id',
+                      as: 'departmentId'
+                    }
+                  },
+                  { $unwind: '$departmentId' }
+                ]
+              }
+            },
+            { $unwind: '$machineId' }
+          ]
         }
-      });
+      },
+      { $unwind: '$sensorId' }
+    ]);
 
     const processedMachines = new Set();
     const timeouts = await getSignalTimeouts();
@@ -457,24 +480,40 @@ async function updateOngoingStoppages(currentTime, io) { // FIX: Add io paramete
 // Get unclassified stoppages count for dashboard
 router.get('/unclassified-stoppages-count', async (req, res) => {
   try {
-    const count = await ProductionRecord.aggregate([
-      {
-        $unwind: '$hourlyData'
-      },
-      {
-        $unwind: '$hourlyData.stoppages'
-      },
+    // Optimized aggregation pipeline
+    const result = await ProductionRecord.aggregate([
       {
         $match: {
           'hourlyData.stoppages.reason': 'unclassified'
         }
       },
       {
-        $count: 'total'
+        $project: {
+          unclassifiedCount: {
+            $size: {
+              $filter: {
+                input: {
+                  $reduce: {
+                    input: '$hourlyData',
+                    initialValue: [],
+                    in: { $concatArrays: ['$$value', '$$this.stoppages'] }
+                  }
+                },
+                cond: { $eq: ['$$this.reason', 'unclassified'] }
+              }
+            }
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$unclassifiedCount' }
+        }
       }
     ]);
     
-    res.json({ count: count[0]?.total || 0 });
+    res.json({ count: result[0]?.total || 0 });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -492,7 +531,7 @@ async function updateProductionRecord(machineId, currentTime, io) {
         $gte: new Date(currentDate + 'T00:00:00.000Z'),
         $lt: new Date(currentDate + 'T23:59:59.999Z')
       }
-    }).populate('operatorId moldId');
+    });
 
     if (!productionRecord) {
       productionRecord = new ProductionRecord({
@@ -555,7 +594,8 @@ router.get('/machine/:machineId/recent', auth, async (req, res) => {
     
     // Return all current signals for the machine (one per sensor)
     const signals = await SignalData.find({ machineId })
-      .populate('sensorId');
+      .populate('sensorId')
+      .lean();
 
     res.json(signals);
   } catch (error) {

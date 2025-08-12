@@ -9,6 +9,8 @@ const nodemailer = require('nodemailer');
 const PDFDocument = require('pdfkit');
 const path = require('path');
 const fs = require('fs');
+const Department = require('../models/Department');
+
 
 const router = express.Router();
 
@@ -42,14 +44,45 @@ router.get('/', auth, async (req, res) => {
     if (departmentId) query.departmentId = departmentId;
     if (machineId) query.machineId = machineId;
 
-   const reports = await Report.find(query)
-    .populate({
-      path: 'generatedBy',
-      select: 'username',
-      options: { retainNullValues: true } // Keep null if user deleted
-    })
-    .populate('departmentId machineId')
-    .sort({ createdAt: -1 });
+    // Use aggregation pipeline for better performance
+    const reports = await Report.aggregate([
+      { $match: query },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'generatedBy',
+          foreignField: '_id',
+          as: 'generatedBy',
+          pipeline: [
+            { $project: { username: 1 } }
+          ]
+        }
+      },
+      {
+        $lookup: {
+          from: 'departments',
+          localField: 'departmentId',
+          foreignField: '_id',
+          as: 'departmentId'
+        }
+      },
+      {
+        $lookup: {
+          from: 'machines',
+          localField: 'machineId',
+          foreignField: '_id',
+          as: 'machineId'
+        }
+      },
+      {
+        $addFields: {
+          generatedBy: { $arrayElemAt: ['$generatedBy', 0] },
+          departmentId: { $arrayElemAt: ['$departmentId', 0] },
+          machineId: { $arrayElemAt: ['$machineId', 0] }
+        }
+      },
+      { $sort: { createdAt: -1 } }
+    ]);
 
     res.json(reports);
   } catch (error) {
@@ -61,7 +94,8 @@ router.get('/', auth, async (req, res) => {
 router.post('/:id/email', auth, async (req, res) => {
   try {
     const report = await Report.findById(req.params.id)
-      .populate('departmentId machineId generatedBy');
+      .populate('departmentId machineId generatedBy')
+      .lean();
     
     if (!report) {
       return res.status(404).json({ message: 'Report not found' });
@@ -69,9 +103,11 @@ router.post('/:id/email', auth, async (req, res) => {
 
     await emailReport(report);
     
-    report.emailSent = true;
-    report.emailSentAt = new Date();
-    await report.save();
+    // Update email status efficiently
+    await Report.findByIdAndUpdate(req.params.id, {
+      emailSent: true,
+      emailSentAt: new Date()
+    });
 
     res.json({ message: 'Report emailed successfully' });
   } catch (error) {
@@ -83,7 +119,8 @@ router.post('/:id/email', auth, async (req, res) => {
 router.get('/:id/pdf', auth, async (req, res) => {
   try {
     const report = await Report.findById(req.params.id)
-      .populate('departmentId machineId generatedBy');
+      .populate('departmentId machineId generatedBy')
+      .lean();
     
     if (!report) {
       return res.status(404).json({ message: 'Report not found' });
@@ -121,32 +158,148 @@ async function generateReport({ type, startDate, endDate, departmentId, machineI
     throw new Error('Invalid machine ID');
   }
   
-  const query = {
-    startTime: { $gte: startDate, $lte: endDate }
-  };
+  // Build aggregation pipeline
+  let pipeline = [
+    {
+      $match: {
+        startTime: { $gte: startDate, $lte: endDate }
+      }
+    }
+  ];
   
   if (departmentId) {
-    const machines = await Machine.find({ departmentId });
-    query.machineId = { $in: machines.map(m => m._id) };
+    pipeline.push({
+      $lookup: {
+        from: 'machines',
+        localField: 'machineId',
+        foreignField: '_id',
+        as: 'machine',
+        pipeline: [
+          { $match: { departmentId: new mongoose.Types.ObjectId(departmentId) } }
+        ]
+      }
+    });
+    pipeline.push({ $match: { machine: { $ne: [] } } });
+    pipeline.push({ $unwind: '$machine' });
+    pipeline.push({
+      $addFields: {
+        machineId: '$machine'
+      }
+    });
   }
   
   if (machineId) {
-    query.machineId = machineId;
+    pipeline[0].$match.machineId = new mongoose.Types.ObjectId(machineId);
   }
 
-  const productionRecords = await ProductionRecord.find(query)
-  .populate('machineId operatorId')
-  .populate({
-    path: 'hourlyData.moldId',
-    model: 'Mold'
-  });
+  // Add lookups for related data
+  pipeline.push(
+    {
+      $lookup: {
+        from: 'machines',
+        localField: 'machineId',
+        foreignField: '_id',
+        as: 'machineId'
+      }
+    },
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'operatorId',
+        foreignField: '_id',
+        as: 'operatorId'
+      }
+    },
+    {
+      $lookup: {
+        from: 'molds',
+        localField: 'hourlyData.moldId',
+        foreignField: '_id',
+        as: 'moldData'
+      }
+    },
+    {
+      $addFields: {
+        machineId: { $arrayElemAt: ['$machineId', 0] },
+        operatorId: { $arrayElemAt: ['$operatorId', 0] },
+        hourlyData: {
+          $map: {
+            input: '$hourlyData',
+            as: 'hour',
+            in: {
+              $mergeObjects: [
+                '$$hour',
+                {
+                  moldId: {
+                    $arrayElemAt: [
+                      {
+                        $filter: {
+                          input: '$moldData',
+                          cond: { $eq: ['$$this._id', '$$hour.moldId'] }
+                        }
+                      },
+                      0
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    { $project: { moldData: 0 } }
+  );
+
+  const productionRecords = await ProductionRecord.aggregate(pipeline);
 
   // Get shifts configuration
-  const config = await Config.findOne();
+  const config = await Config.findOne().lean();
   const shifts = config?.shifts || [];
 
   // Calculate metrics
   const { metrics, shiftData, machineData } = await calculateMetrics(productionRecords, shifts);
+
+  // Calculate department data
+  const departmentData = [];
+  
+  if (departmentId) {
+    // Single department report
+    const department = await Department.findById(departmentId).lean();
+    if (department) {
+      departmentData.push({
+        departmentId: departmentId,
+        departmentName: department.name,
+        metrics: calculateMetricsForRecords(productionRecords, shifts)
+      });
+    }
+  } else {
+    // Multi-department report
+    const departmentsMap = new Map();
+    
+    productionRecords.forEach(record => {
+      if (record.machineId?.departmentId) {
+        const deptId = record.machineId.departmentId.toString();
+        if (!departmentsMap.has(deptId)) {
+          departmentsMap.set(deptId, []);
+        }
+        departmentsMap.get(deptId).push(record);
+      }
+    });
+    
+    const departments = await Department.find({
+      _id: { $in: Array.from(departmentsMap.keys()) }
+    }).lean();
+    
+    for (const [deptId, records] of departmentsMap.entries()) {
+      const department = departments.find(d => d._id.toString() === deptId);
+      departmentData.push({
+        departmentId: deptId,
+        departmentName: department ? department.name : 'Unknown',
+        metrics: calculateMetricsForRecords(records, shifts)
+      });
+    }
+  }
 
   const report = new Report({
     type,
@@ -156,6 +309,7 @@ async function generateReport({ type, startDate, endDate, departmentId, machineI
     metrics,
     shiftData,
     machineData,
+    departmentData, // Add department data to report
     generatedBy
   });
 
@@ -220,7 +374,7 @@ async function calculateMetrics(productionRecords, shifts) {
       totalStoppageMinutes += hourData.stoppageMinutes || 0;
       totalStoppages += hourData.stoppages?.length || 0;
 
-      // Calculate expected units based on mold capacity
+      // Calculate expected units based on ACTUAL RUNNING TIME (changed from total running minutes)
       if (hourData.moldId?.productionCapacityPerHour) {
         const capacityPerMinute = hourData.moldId.productionCapacityPerHour / 60;
         const expectedUnits = capacityPerMinute * (hourData.runningMinutes || 0);
@@ -244,7 +398,7 @@ async function calculateMetrics(productionRecords, shifts) {
         shiftMetrics[shift.name].metrics.runningMinutes += hourData.runningMinutes || 0;
         shiftMetrics[shift.name].metrics.stoppageMinutes += hourData.stoppageMinutes || 0;
         
-        // Calculate expected units for shift
+        // Calculate expected units for shift based on ACTUAL RUNNING TIME (changed)
         if (hourData.moldId?.productionCapacityPerHour) {
           const capacityPerMinute = hourData.moldId.productionCapacityPerHour / 60;
           shiftMetrics[shift.name].metrics.expectedUnits += 
@@ -261,7 +415,12 @@ async function calculateMetrics(productionRecords, shifts) {
     (totalUnitsProduced - totalDefectiveUnits) / totalUnitsProduced : 0;
   const performance = totalExpectedUnits > 0 ? 
     (totalUnitsProduced / totalExpectedUnits) : 0;
-  const oee = availability * quality * performance;
+
+  let avgOEE = 0;
+  if (machineData.length > 0) {
+    const totalMachineOEE = machineData.reduce((sum, machine) => sum + machine.metrics.oee, 0);
+    avgOEE = totalMachineOEE / machineData.length;
+  }
 
   // Calculate MTBF and MTTR based on breakdowns only
   const mtbf = breakdownStoppages > 0 ? totalRunningMinutes / breakdownStoppages : 0;
@@ -284,7 +443,7 @@ async function calculateMetrics(productionRecords, shifts) {
       startTime: shiftInfo.startTime,
       endTime: shiftInfo.endTime,
       metrics: {
-        oee: Math.round(shiftOEE * 100),
+        oee: Math.round(avgOEE),
         unitsProduced: shiftMetricsData.unitsProduced,
         defectiveUnits: shiftMetricsData.defectiveUnits,
         runningMinutes: shiftMetricsData.runningMinutes,
@@ -295,7 +454,7 @@ async function calculateMetrics(productionRecords, shifts) {
 
   return {
     metrics: {
-      oee: Math.round(oee * 100),
+      oee: Math.round(avgOEE),
       mtbf: Math.round(mtbf),
       mttr: Math.round(mttr),
       availability: Math.round(availability * 100),
@@ -331,10 +490,10 @@ function calculateMetricsForRecords(records, shifts) {
       totalStoppageMinutes += hourData.stoppageMinutes || 0;
       totalStoppages += hourData.stoppages?.length || 0;
 
+      // Calculate expected units based on ACTUAL RUNNING TIME (changed)
       if (hourData.moldId?.productionCapacityPerHour) {
         const capacityPerMinute = hourData.moldId.productionCapacityPerHour / 60;
-        const expectedUnits = capacityPerMinute * (hourData.runningMinutes || 0);
-        totalExpectedUnits += expectedUnits;
+        totalExpectedUnits += capacityPerMinute * (hourData.runningMinutes || 0);
       }
 
       hourData.stoppages?.forEach(stoppage => {
@@ -387,7 +546,7 @@ function getShiftForHour(hour, shifts) {
 }
 
 async function emailReport(report) {
-  const config = await Config.findOne();
+  const config = await Config.findOne().lean();
   if (!config || !config.email.recipients.length) {
     throw new Error('Email configuration not found');
   }
@@ -476,7 +635,7 @@ async function generatePDF(report) {
   return new Promise(async (resolve, reject) => {
     try {
       // Pre-fetch configuration once
-      const config = await Config.findOne();
+      const config = await Config.findOne().lean();
 
       const doc = new PDFDocument({ 
         margin: 40,
@@ -797,53 +956,154 @@ async function generatePDF(report) {
         let currentYNew = startYNew + 20;
         
         report.machineData.forEach(machine => {
-          const metrics = machine.metrics;
-          x = 40;
-          
-          // Machine name
-          doc.text(machine.machineName || 'Unknown', x, currentYNew, { width: columnWidths[0] });
-          x += columnWidths[0];
-          
-          // OEE with color coding
-          const oeeColor = getOEEColor(metrics.oee, config);
-          doc.fillColor(oeeColor).text(`${metrics.oee}%`, x, currentYNew, { width: columnWidths[1], align: 'center' });
-          x += columnWidths[1];
-          
-          // Availability
-          doc.fillColor('#000000').text(`${metrics.availability}%`, x, currentYNew, { width: columnWidths[2], align: 'center' });
-          x += columnWidths[2];
-          
-          // Quality
-          doc.text(`${metrics.quality}%`, x, currentYNew, { width: columnWidths[3], align: 'center' });
-          x += columnWidths[3];
-          
-          // Performance
-          doc.text(`${metrics.performance}%`, x, currentYNew, { width: columnWidths[4], align: 'center' });
-          x += columnWidths[4];
-          
-          // Units
-          doc.text(metrics.totalUnitsProduced.toLocaleString(), x, currentYNew, { width: columnWidths[5], align: 'center' });
-          x += columnWidths[5];
-          
-          // Defects
-          doc.text(metrics.totalDefectiveUnits.toLocaleString(), x, currentYNew, { width: columnWidths[6], align: 'center' });
-          
-          // Draw row separator
-          doc.moveTo(40, currentYNew + 15)
-             .lineTo(doc.page.width - 40, currentYNew + 15)
-             .strokeColor('#e5e7eb').lineWidth(0.5).stroke();
-          
-          currentYNew += 20;
+  const metrics = machine.metrics;
+  x = 40;
+  
+  // Machine name
+  doc.text(machine.machineName || 'Unknown', x, currentYNew, { width: columnWidths[0] });
+  x += columnWidths[0];
+  
+  // OEE
+  const oeeColor = getPercentageMetricColor(metrics.oee, 'oee', config);
+  doc.fillColor(oeeColor).text(`${metrics.oee}%`, x, currentYNew, { width: columnWidths[1], align: 'center' });
+  x += columnWidths[1];
+  
+  // Availability
+  const availabilityColor = getPercentageMetricColor(metrics.availability, 'availability', config);
+  doc.fillColor(availabilityColor).text(`${metrics.availability}%`, x, currentYNew, { width: columnWidths[2], align: 'center' });
+  x += columnWidths[2];
+  
+  // Quality
+  const qualityColor = getPercentageMetricColor(metrics.quality, 'quality', config);
+  doc.fillColor(qualityColor).text(`${metrics.quality}%`, x, currentYNew, { width: columnWidths[3], align: 'center' });
+  x += columnWidths[3];
+  
+  // Performance
+  const performanceColor = getPercentageMetricColor(metrics.performance, 'performance', config);
+  doc.fillColor(performanceColor).text(`${metrics.performance}%`, x, currentYNew, { width: columnWidths[4], align: 'center' });
+  x += columnWidths[4];
+  
+  // Units
+  doc.fillColor('#000000').text(metrics.totalUnitsProduced.toLocaleString(), x, currentYNew, { width: columnWidths[5], align: 'center' });
+  x += columnWidths[5];
+  
+  // Defects
+  doc.fillColor('#000000').text(metrics.totalDefectiveUnits.toLocaleString(), x, currentYNew, { width: columnWidths[6], align: 'center' });
+  
+  // Draw row separator
+  doc.moveTo(40, currentYNew + 15)
+     .lineTo(doc.page.width - 40, currentYNew + 15)
+     .strokeColor('#e5e7eb').lineWidth(0.5).stroke();
+  
+  currentYNew += 20;
         });
+
+        if (report.departmentData && report.departmentData.length > 0) {
+  doc.addPage();
+  doc.fontSize(16).fillColor('#1e40af').text('DEPARTMENT PERFORMANCE', { align: 'center' });
+  doc.moveDown(0.5);
+  
+  const headers = ['Department', 'OEE', 'Availability', 'Quality', 'Performance', 'Units', 'Defects'];
+  const columnWidths = [150, 50, 80, 60, 80, 60, 60];
+  const startY = doc.y;
+  
+  // Header row
+  doc.font('Helvetica-Bold').fontSize(9);
+  let x = 40;
+  headers.forEach((header, i) => {
+    doc.text(header, x, startY, { width: columnWidths[i], align: 'center' });
+    x += columnWidths[i];
+  });
+  
+  // Header underline
+  doc.moveTo(40, startY + 15)
+     .lineTo(doc.page.width - 40, startY + 15)
+     .stroke();
+  
+  // Department rows
+  doc.font('Helvetica').fontSize(8);
+  let currentY = startY + 20;
+  
+  report.departmentData.forEach(dept => {
+    const metrics = dept.metrics;
+    x = 40;
+    
+    // Department name
+    doc.text(dept.departmentName, x, currentY, { width: columnWidths[0] });
+    x += columnWidths[0];
+    
+    // OEE
+    const oeeColor = getPercentageMetricColor(metrics.oee, 'oee', config);
+    doc.fillColor(oeeColor).text(`${metrics.oee}%`, x, currentY, { width: columnWidths[1], align: 'center' });
+    x += columnWidths[1];
+    
+    // Availability
+    const availabilityColor = getPercentageMetricColor(metrics.availability, 'availability', config);
+    doc.fillColor(availabilityColor).text(`${metrics.availability}%`, x, currentY, { width: columnWidths[2], align: 'center' });
+    x += columnWidths[2];
+    
+    // Quality
+    const qualityColor = getPercentageMetricColor(metrics.quality, 'quality', config);
+    doc.fillColor(qualityColor).text(`${metrics.quality}%`, x, currentY, { width: columnWidths[3], align: 'center' });
+    x += columnWidths[3];
+    
+    // Performance
+    const performanceColor = getPercentageMetricColor(metrics.performance, 'performance', config);
+    doc.fillColor(performanceColor).text(`${metrics.performance}%`, x, currentY, { width: columnWidths[4], align: 'center' });
+    x += columnWidths[4];
+    
+    // Units
+    doc.fillColor('#000000').text(metrics.totalUnitsProduced.toLocaleString(), x, currentY, { width: columnWidths[5], align: 'center' });
+    x += columnWidths[5];
+    
+    // Defects
+    doc.fillColor('#000000').text(metrics.totalDefectiveUnits.toLocaleString(), x, currentY, { width: columnWidths[6], align: 'center' });
+    
+    // Row separator
+    doc.moveTo(40, currentY + 15)
+       .lineTo(doc.page.width - 40, currentY + 15)
+       .strokeColor('#e5e7eb').lineWidth(0.5).stroke();
+    
+    currentY += 20;
+  });
+        }
+
       }
 
-      // Footer
-      doc.fontSize(7).fillColor('#9ca3af').font('Helvetica')
-         .text('Dawlance - LineSentry', 40, doc.page.height - 30)
-         .text(`Generated: ${new Date().toLocaleString()}`, 40, doc.page.height - 30, { 
-           align: 'right', 
-           width: pageWidth 
-         });
+      // Add Legend Section
+doc.addPage();
+doc.fontSize(14).fillColor('#1e40af').text('REPORT COLOR LEGEND', { align: 'center' });
+doc.moveDown(0.5);
+
+// Legend items
+const legendItems = [
+  { color: '#10b981', text: 'Excellent' },
+  { color: '#f59e0b', text: 'Good' },
+  { color: '#f97316', text: 'Fair' },
+  { color: '#ef4444', text: 'Needs Improvement' }
+];
+
+// Draw legend
+const legendX = 100;
+let legendY = 100;
+
+legendItems.forEach(item => {
+  doc.rect(legendX, legendY, 15, 15)
+     .fillColor(item.color)
+     .fill();
+  
+  doc.fontSize(10)
+     .fillColor('#1f2937')
+     .text(item.text, legendX + 25, legendY + 2);
+  
+  legendY += 25;
+});
+
+// Threshold explanation
+doc.moveDown(1);
+doc.fontSize(9)
+   .fillColor('#6b7280')
+   .text('* Color thresholds are based on configurable metric-specific values', 100, legendY);
 
       doc.end();
     } catch (error) {
@@ -858,6 +1118,17 @@ function getOEEColor(oee, config) {
   if (oee >= config.metricsThresholds.oee.excellent) return '#10b981';
   if (oee >= config.metricsThresholds.oee.good) return '#f59e0b';
   if (oee >= config.metricsThresholds.oee.fair) return '#f97316';
+  return '#ef4444';
+}
+
+function getPercentageMetricColor(value, metricName, config) {
+  if (!config?.metricsThresholds?.[metricName]) return '#000000';
+  
+  const thresholds = config.metricsThresholds[metricName];
+  
+  if (value >= thresholds.excellent) return '#10b981';
+  if (value >= thresholds.good) return '#f59e0b';
+  if (value >= thresholds.fair) return '#f97316';
   return '#ef4444';
 }
 
@@ -884,11 +1155,13 @@ function getQualityColor(qualityRate, config) {
 
 function getReliabilityColor(ratio, config) {
   if (!config?.metricsThresholds?.reliability) return '#ef4444';
+  
   if (ratio >= config.metricsThresholds.reliability.excellent) return '#10b981';
   if (ratio >= config.metricsThresholds.reliability.good) return '#f59e0b';
   if (ratio >= config.metricsThresholds.reliability.fair) return '#f97316';
   return '#ef4444';
 }
+
 
 function getReliabilityStatus(ratio, config) {
   if (!config?.metricsThresholds?.reliability) return 'POOR RELIABILITY';

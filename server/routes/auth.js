@@ -74,7 +74,8 @@ router.get('/me', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user._id)
       .populate('departmentId')
-      .select('-password');
+      .select('-password')
+      .lean();
     res.json(user);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });

@@ -53,7 +53,7 @@ const Layout: React.FC = () => {
         <div className="fixed inset-0 bg-gray-900 bg-opacity-75" onClick={() => setSidebarOpen(false)} />
         <div className={`fixed inset-y-0 left-0 flex w-64 flex-col ${isDarkMode ? 'bg-gray-800' : 'bg-white shadow-2xl'}`}>
           <div className="flex h-16 items-center justify-between px-4 border-b border-gray-200">
-            <span className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Dawlance | LineSentry</span>
+            <span className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>LineSentry</span>
             <button onClick={() => setSidebarOpen(false)} className={`${isDarkMode ? 'text-gray-300 hover:text-white' : 'text-gray-400 hover:text-gray-600'}`}>
               <X className="h-6 w-6" />
             </button>
@@ -90,7 +90,7 @@ const Layout: React.FC = () => {
       <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
         <div className={`flex flex-1 flex-col ${isDarkMode ? 'bg-gray-800' : 'bg-white shadow-xl border-r border-gray-200'}`}>
           <div className="flex h-16 items-center px-4 border-b border-gray-200">
-            <span className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Dawlance | LineSentry</span>
+            <span className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>LineSentry</span>
           </div>
           <nav className="flex-1 space-y-1 px-3 py-4">
             {navigation.map((item) => (

@@ -6,6 +6,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
+const compression = require('compression');
 
 const authRoutes = require('./routes/auth');
 const departmentRoutes = require('./routes/departments');
@@ -74,6 +75,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 app.use(express.json());
+app.use(compression());
 // app.use(generalLimiter);
 
 // Make io available to routes

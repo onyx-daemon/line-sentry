@@ -168,7 +168,7 @@ const Departments: React.FC = () => {
   const handleCreateDepartment = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const newDepartment = await apiService.createDepartment(formData);
+      await apiService.createDepartment(formData);
       toast.success('Department created successfully');
       
       // Refresh the current page
@@ -186,7 +186,7 @@ const Departments: React.FC = () => {
     if (!editingDepartment) return;
     
     try {
-      const updatedDepartment = await apiService.updateDepartment(editingDepartment._id, editingDepartment);
+      await apiService.updateDepartment(editingDepartment._id, editingDepartment);
       toast.success('Department updated successfully');
       
       // Refresh the current page

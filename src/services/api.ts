@@ -54,7 +54,7 @@ class ApiService {
     localStorage.removeItem('token');
   }
 
-  private async request(endpoint: string, options: AxiosRequestConfig = {}) {
+  async request(endpoint: string, options: AxiosRequestConfig = {}) {
     try {
       const response = await this.axiosInstance({
         url: endpoint,
@@ -435,6 +435,12 @@ class ApiService {
       throw new Error(error.response?.data?.message || 'Failed to download PDF');
     }
   }
+
+  // Factory
+  async getFactoryStats() {
+    return this.request('/analytics/factory-stats');
+  }
 }
+
 
 export default new ApiService();

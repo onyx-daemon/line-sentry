@@ -63,13 +63,13 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
   const [stoppageForm, setStoppageForm] = useState({
     reason: '',
     description: '',
-    duration: 30,
+    duration: 5,
     sapNotificationNumber: ''
   });
   const [assignmentForm, setAssignmentForm] = useState({
     operatorId: currentUser?.role === 'operator' 
-    ? (currentUser.id || '')
-    : (hour.operator?.id || ''),
+    ? (currentUser._id || '')
+    : (hour.operator?._id || ''),
   moldId: hour.mold?._id || '',
   defectiveUnits: hour.defectiveUnits || 0
   });
@@ -93,18 +93,6 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
 
   // Check for pending stoppages
   const pendingStoppage = hour.stoppages.find(s => s.reason === 'unclassified' || (s as any).isPending);
-
-  useEffect(() => {
-    if (pendingStoppage) {
-      setActiveTab('stoppage');
-      setStoppageForm({
-        reason: '',
-        description: '',
-        duration: pendingStoppage.duration || 30,
-        sapNotificationNumber: ''
-      });
-    }
-  }, [pendingStoppage]);
 
   // Detect shift when hour changes
   useEffect(() => {
@@ -181,7 +169,7 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
 
       await apiService.addStoppageRecord(stoppageData);
       
-      setStoppageForm({ reason: '', description: '', duration: 30, sapNotificationNumber: '' });
+      setStoppageForm({ reason: '', description: '', duration: 5, sapNotificationNumber: '' });
       toast.success('Stoppage recorded successfully');
       onClose();
     } catch (error) {
@@ -481,7 +469,7 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
                 >
                   <option value="">No operator assigned</option>
                   {availableOperators.map((operator) => (
-                    <option key={operator.id} value={operator.id}>
+                    <option key={operator._id} value={operator._id}>
                       {operator.username}
                     </option>
                   ))}
@@ -627,7 +615,7 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
                     min="1"
                     max="60"
                     value={stoppageForm.duration}
-                    onChange={(e) => setStoppageForm({...stoppageForm, duration: parseInt(e.target.value) || 30})}
+                    onChange={(e) => setStoppageForm({...stoppageForm, duration: parseInt(e.target.value) || 5})}
                     className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
                   />
                 </div>
@@ -954,7 +942,7 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
               if (hourIndex >= 0) {
                 // Update operator using fresh data
                 if (update.operatorId !== null) {
-                  const operator = operators.find(op => op.id === update.operatorId);
+                  const operator = operators.find(op => op._id === update.operatorId);
                   newData[dayIndex].hours[hourIndex].operator = operator || undefined;
                 } else {
                   newData[dayIndex].hours[hourIndex].operator = undefined;

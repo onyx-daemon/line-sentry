@@ -7,7 +7,7 @@ const router = express.Router();
 // Route for fetching shift details (accessible to any authenticated user)
 router.get('/shifts', auth, async (req, res) => {
   try {
-    const config = await Config.findOne().select('shifts -_id');
+    const config = await Config.findOne().select('shifts -_id').lean();
     if (!config) {
       return res.json({ shifts: [] });
     }
@@ -21,10 +21,12 @@ router.get('/shifts', auth, async (req, res) => {
 // Get configuration
 router.get('/', auth, adminAuth, async (req, res) => {
   try {
-    let config = await Config.findOne();
+    let config = await Config.findOne().lean();
     if (!config) {
-      config = new Config(); // Will use schema defaults
-      await config.save();
+      // Create with defaults and return lean version
+      const newConfig = new Config();
+      await newConfig.save();
+      config = await Config.findById(newConfig._id).lean();
     }
     res.json(config);
   } catch (error) { 

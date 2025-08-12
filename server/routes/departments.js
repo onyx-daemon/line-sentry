@@ -15,19 +15,29 @@ router.get('/', auth, async (req, res) => {
       query._id = req.user.departmentId._id;
     }
 
-    const departments = await Department.find(query).lean();
+    // Use aggregation pipeline for better performance
+    const departments = await Department.aggregate([
+      { $match: query },
+      {
+        $lookup: {
+          from: 'machines',
+          localField: '_id',
+          foreignField: 'departmentId',
+          as: 'machines',
+          pipeline: [
+            { $match: { isActive: true } },
+            { $project: { _id: 1, name: 1, status: 1, position: 1, dimensions: 1 } }
+          ]
+        }
+      },
+      {
+        $addFields: {
+          machineCount: { $size: '$machines' }
+        }
+      }
+    ]);
     
-    const departmentsWithCounts = await Promise.all(departments.map(async dept => {
-      const machines = await Machine.find({
-        departmentId: dept._id,
-        isActive: true
-      });
-
-      const machineCount = machines.length;
-      return { ...dept, machines, machineCount };
-    }));
-
-    res.json(departmentsWithCounts);
+    res.json(departments);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -70,25 +80,38 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
     const sortObj = {};
     sortObj[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
-    // Execute queries
-    const [departments, totalDepartments] = await Promise.all([
-      Department.find(query)
-        .sort(sortObj)
-        .skip(skip)
-        .limit(limitNum)
-        .lean(),
-      Department.countDocuments(query)
+    // Use aggregation pipeline for better performance
+    const [departments, totalResult] = await Promise.all([
+      Department.aggregate([
+        { $match: query },
+        {
+          $lookup: {
+            from: 'machines',
+            localField: '_id',
+            foreignField: 'departmentId',
+            as: 'machines',
+            pipeline: [
+              { $match: { isActive: true } },
+              { $project: { _id: 1, name: 1, status: 1 } }
+            ]
+          }
+        },
+        {
+          $addFields: {
+            machineCount: { $size: '$machines' }
+          }
+        },
+        { $sort: sortObj },
+        { $skip: skip },
+        { $limit: limitNum }
+      ]),
+      Department.aggregate([
+        { $match: query },
+        { $count: "total" }
+      ])
     ]);
 
-    // Add machine counts to each department
-    const departmentsWithCounts = await Promise.all(departments.map(async dept => {
-      const machines = await Machine.find({
-        departmentId: dept._id,
-        isActive: true
-      });
-      const machineCount = machines.length;
-      return { ...dept, machines, machineCount };
-    }));
+    const totalDepartments = totalResult[0]?.total || 0;
 
     // Calculate pagination info
     const totalPages = Math.ceil(totalDepartments / limitNum);
@@ -96,7 +119,7 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
     const hasPrevPage = pageNum > 1;
 
     res.json({
-      departments: departmentsWithCounts,
+      departments,
       pagination: {
         currentPage: pageNum,
         totalPages,
@@ -127,15 +150,15 @@ router.get('/:id', auth, async (req, res) => {
       return res.status(403).json({ message: 'Access denied to this department' });
     }
 
-    const department = await Department.findById(req.params.id);
+    const department = await Department.findById(req.params.id).lean();
     if (!department) {
       return res.status(404).json({ message: 'Department not found' });
     }
 
-    const machines = await Machine.find({ departmentId: req.params.id, isActive: true });
+    const machines = await Machine.find({ departmentId: req.params.id, isActive: true }).lean();
     
     res.json({
-      ...department.toObject(),
+      ...department,
       machines
     });
   } catch (error) {

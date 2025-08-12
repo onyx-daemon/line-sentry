@@ -40,6 +40,7 @@ const Dashboard: React.FC = () => {
 
     const handleProductionUpdate = () => {
       fetchFactoryStats();
+      fetchDepartments();
     };
 
     const handleStoppageUpdate = () => {
@@ -80,43 +81,18 @@ const Dashboard: React.FC = () => {
   };
 
   const fetchFactoryStats = async () => {
-    try {
-      // Get all machines and their stats
-      const machines = await apiService.getMachines();
-      let totalUnits = 0;
-      let totalOEE = 0;
-      let activeMachines = 0;
-
-      // Get stats for each machine
-      const statsPromises = machines.map((machine: any) => 
-        apiService.getMachineStats(machine._id, '24h').catch(() => null)
-      );
-      
-      const allStats = await Promise.all(statsPromises);
-      
-      allStats.forEach((stats, index) => {
-        if (stats) {
-          totalUnits += stats.totalUnitsProduced;
-          totalOEE += stats.oee;
-          if (machines[index].status === 'running') {
-            activeMachines++;
-          }
-        }
-      });
-
-      // Get unclassified stoppages count
-      const unclassifiedData = await apiService.request('/signals/unclassified-stoppages-count');
-
-      setFactoryStats({
-        totalUnits,
-        avgOEE: machines.length > 0 ? Math.round(totalOEE / machines.length) : 0,
-        unclassifiedStoppages: unclassifiedData.count || 0,
-        activeMachines
-      });
-    } catch (err) {
-      console.error('Failed to fetch factory stats:', err);
-    }
-  };
+  try {
+    const stats = await apiService.getFactoryStats();
+    setFactoryStats({
+      totalUnits: stats.totalUnits,
+      avgOEE: stats.avgOEE,
+      unclassifiedStoppages: stats.unclassifiedStoppages,
+      activeMachines: stats.activeMachines
+    });
+  } catch (err) {
+    console.error('Failed to fetch factory stats:', err);
+  }
+};
 
   const handleDepartmentClick = (departmentId: string) => {
     navigate(`/department/${departmentId}`);

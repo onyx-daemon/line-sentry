@@ -16,7 +16,8 @@ router.get('/', auth, async (req, res) => {
 
     const users = await User.find(query)
       .populate('departmentId', 'name _id')
-      .select('-password');
+      .select('-password')
+      .lean();
 
     res.json(users);
   } catch (error) {
@@ -80,7 +81,8 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
         .select('-password')
         .sort(sortObj)
         .skip(skip)
-        .limit(limitNum),
+        .limit(limitNum)
+        .lean(),
       User.countDocuments(query)
     ]);
 
