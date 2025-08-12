@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { useContext } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
+import { useForm, FormProvider, useFieldArray, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { useAuth } from '../context/AuthContext';
 import { ThemeContext } from '../App';
 import { Config, Sensor, MetricKey, LevelKey } from '../types';
@@ -19,6 +21,57 @@ import {
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 
+// Zod schemas
+const plcSchema = z.object({
+  ip: z.string().min(1, "IP is required"),
+  rack: z.number().int().min(0, "Rack must be non-negative"),
+  slot: z.number().int().min(0, "Slot must be non-negative")
+});
+
+const emailSchema = z.object({
+  senderEmail: z.email("Invalid email format"),
+  senderPassword: z.string().min(1, "Password is required"),
+  recipients: z.array(z.email("Invalid email format")).min(1, "At least one recipient is required")
+});
+
+const signalTimeoutsSchema = z.object({
+  powerSignalTimeout: z.number().int().min(1).max(60),
+  cycleSignalTimeout: z.number().int().min(1).max(60)
+});
+
+const shiftSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  startTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/, "Invalid time format (HH:MM)"),
+  endTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/, "Invalid time format (HH:MM)"),
+  isActive: z.boolean()
+});
+
+const levelThresholdsSchema = z.object({
+  excellent: z.number().min(0, "Value must be non-negative"),
+  good: z.number().min(0, "Value must be non-negative"),
+  fair: z.number().min(0, "Value must be non-negative")
+});
+
+const metricsThresholdsSchema = z.object({
+  oee: levelThresholdsSchema,
+  availability: levelThresholdsSchema,
+  quality: levelThresholdsSchema,
+  performance: levelThresholdsSchema,
+  mtbf: levelThresholdsSchema,
+  mttr: levelThresholdsSchema,
+  reliability: levelThresholdsSchema
+});
+
+const configSchema = z.object({
+  plc: plcSchema,
+  email: emailSchema,
+  signalTimeouts: signalTimeoutsSchema,
+  shifts: z.array(shiftSchema),
+  metricsThresholds: metricsThresholdsSchema
+});
+
+type ConfigFormData = z.infer<typeof configSchema>;
+
 const Configuration: React.FC = () => {
   const { isAdmin } = useAuth();
   const { isDarkMode } = useContext(ThemeContext);
@@ -28,24 +81,49 @@ const Configuration: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [activeTab, setActiveTab] = useState('plc');
-  const [emailRecipients, setEmailRecipients] = useState('');
 
   // Pin mapping state
   const [selectedSensor, setSelectedSensor] = useState('');
   const [selectedPin, setSelectedPin] = useState('');
+
+  const methods = useForm<ConfigFormData>({
+    resolver: zodResolver(configSchema),
+    defaultValues: {
+      plc: { ip: '', rack: 0, slot: 1 },
+      email: { senderEmail: '', senderPassword: '', recipients: [''] },
+      signalTimeouts: { powerSignalTimeout: 5, cycleSignalTimeout: 2 },
+      shifts: [],
+      metricsThresholds: {
+        oee: { excellent: 85, good: 70, fair: 50 },
+        availability: { excellent: 90, good: 80, fair: 70 },
+        quality: { excellent: 95, good: 90, fair: 85 },
+        performance: { excellent: 90, good: 80, fair: 70 },
+        mtbf: { excellent: 500, good: 300, fair: 150 },
+        mttr: { excellent: 20, good: 40, fair: 60 },
+        reliability: { excellent: 10, good: 5, fair: 2 }
+      }
+    }
+  });
+
+  const {
+    control,
+    handleSubmit,
+    reset,
+    formState: { errors },
+    setValue,
+    watch
+  } = methods;
+
+  const { fields, append, remove } = useFieldArray({
+    control,
+    name: 'shifts'
+  });
 
   useEffect(() => {
     if (isAdmin) {
       fetchConfigData();
     }
   }, [isAdmin]);
-
-  useEffect(() => {
-    if (config) {
-      // Initialize recipients as comma-separated string
-      setEmailRecipients(config.email.recipients.join(', '));
-    }
-  }, [config]);
 
   const fetchConfigData = async () => {
     try {
@@ -78,6 +156,18 @@ const Configuration: React.FC = () => {
       setConfig(configData);
       setSensors(sensorsData);
       setPinMappings(pinMappingsData);
+      
+      // Reset form with fetched data
+      reset({
+        plc: configData.plc,
+        email: {
+          ...configData.email,
+          recipients: configData.email.recipients
+        },
+        signalTimeouts: configData.signalTimeouts,
+        shifts: configData.shifts || [],
+        metricsThresholds: configData.metricsThresholds
+      });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch configuration';
       toast.error(errorMessage, {
@@ -90,11 +180,11 @@ const Configuration: React.FC = () => {
     }
   };
 
-  const handleConfigUpdate = async (updatedConfig: Partial<Config>) => {
+  const handleConfigUpdate = async (data: Partial<Config>) => {
     setSaving(true);
 
     try {
-      const newConfig = { ...config, ...updatedConfig } as Config;
+      const newConfig = { ...config, ...data } as Config;
       await apiService.updateConfig(newConfig);
       setConfig(newConfig);
       toast.success('Configuration updated successfully', {
@@ -189,497 +279,598 @@ const Configuration: React.FC = () => {
     );
   }
 
+  const onSubmit = (data: ConfigFormData) => {
+    // Handle each tab's save separately
+    switch (activeTab) {
+      case 'plc':
+        handleConfigUpdate({ plc: data.plc });
+        break;
+      case 'email':
+        handleConfigUpdate({ email: data.email });
+        break;
+      case 'signals':
+        handleConfigUpdate({ signalTimeouts: data.signalTimeouts });
+        break;
+      case 'shifts':
+        handleConfigUpdate({ shifts: data.shifts });
+        break;
+      case 'thresholds':
+        handleConfigUpdate({ metricsThresholds: data.metricsThresholds });
+        break;
+      default:
+        break;
+    }
+  };
+
   return (
-    <div className={`space-y-6 ${isDarkMode ? '' : 'min-h-screen bg-gray-50'}`}>
-      {/* Toast container */}
-      <ToastContainer
-        position="top-right"
-        autoClose={5000}
-        hideProgressBar={false}
-        newestOnTop={false}
-        closeOnClick
-        rtl={false}
-        pauseOnFocusLoss
-        draggable
-        pauseOnHover
-        theme={isDarkMode ? "dark" : "light"}
-      />
-      
-      {/* Header */}
-      <div className="flex items-center space-x-4 px-4 sm:px-0">
-        <Settings className="h-8 w-8 text-blue-400" />
-        <div>
-          <h1 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>System Configuration</h1>
-          <p className={isDarkMode ? 'text-gray-400' : 'text-gray-600'}>Configure PLC settings, email alerts, and sensor mappings</p>
+    <FormProvider {...methods}>
+      <div className={`space-y-6 ${isDarkMode ? '' : 'min-h-screen bg-gray-50'}`}>
+        <ToastContainer
+          position="top-right"
+          autoClose={5000}
+          hideProgressBar={false}
+          newestOnTop={false}
+          closeOnClick
+          rtl={false}
+          pauseOnFocusLoss
+          draggable
+          pauseOnHover
+          theme={isDarkMode ? "dark" : "light"}
+        />
+        
+        {/* Header */}
+        <div className="flex items-center space-x-4 px-4 sm:px-0">
+          <Settings className="h-8 w-8 text-blue-400" />
+          <div>
+            <h1 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>System Configuration</h1>
+            <p className={isDarkMode ? 'text-gray-400' : 'text-gray-600'}>Configure PLC settings, email alerts, and sensor mappings</p>
+          </div>
         </div>
-      </div>
 
-      {/* Tabs - Updated for mobile responsiveness */}
-      <div className={`border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'} pb-1 px-2 sm:px-0`}>
-        <nav className="-mb-px flex space-x-1 md:space-x-3 overflow-x-auto scrollbar-thin 
-          ${isDarkMode ? 'scrollbar-thumb-gray-600 scrollbar-track-gray-800' : 'scrollbar-thumb-gray-300 scrollbar-track-gray-100'} 
-          whitespace-nowrap pb-1`}">
-          {[
-            { id: 'plc', label: 'PLC', icon: Cpu, fullLabel: 'PLC Configuration' },
-            { id: 'email', label: 'Email', icon: Mail, fullLabel: 'Email Settings' },
-            { id: 'signals', label: 'Signals', icon: Settings, fullLabel: 'Signal Settings' },
-            { id: 'shifts', label: 'Shifts', icon: Clock, fullLabel: 'Shift Management' },
-            { id: 'mapping', label: 'Mapping', icon: Link, fullLabel: 'Pin Mapping' },
-            { id: 'thresholds', label: 'Thresholds', icon: BarChart2, fullLabel: 'Metrics Thresholds' }
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center space-x-1 py-2 px-2 md:px-3 border-b-2 font-medium text-xs md:text-sm transition-all ${
-                activeTab === tab.id
-                  ? 'border-blue-500 text-blue-400'
-                  : `border-transparent ${isDarkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'}`
-              }`}
-              aria-label={tab.fullLabel}
-            >
-              <tab.icon className="h-4 w-4 flex-shrink-0" />
-              <span className="hidden sm:inline">{tab.label}</span>
-              <span className="sm:hidden">{tab.label.charAt(0)}</span>
-            </button>
-          ))}
-        </nav>
-      </div>
-
-      {/* Tab Content */}
-      <div className="space-y-6 px-2 sm:px-4">
-        {/* PLC Configuration */}
-        {activeTab === 'plc' && config && (
-          <div className={`rounded-lg border p-4 sm:p-6 ${
-            isDarkMode 
-              ? 'bg-gray-800 border-gray-700' 
-              : 'bg-white border-gray-200 shadow-sm'
-          }`}>
-            <div className="flex items-center space-x-2 mb-4">
-              <Network className="h-5 w-5 text-blue-400" />
-              <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>PLC Connection Settings</h2>
-            </div>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              <div>
-                <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  IP Address
-                </label>
-                <input
-                  type="text"
-                  value={config.plc.ip}
-                  onChange={(e) => setConfig({
-                    ...config,
-                    plc: { ...config.plc, ip: e.target.value }
-                  })}
-                  className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    isDarkMode 
-                      ? 'bg-gray-700 border-gray-600 text-white' 
-                      : 'bg-white border-gray-300 text-gray-900'
-                  }`}
-                  placeholder="192.168.1.100"
-                />
-              </div>
-              
-              <div>
-                <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Rack
-                </label>
-                <input
-                  type="number"
-                  value={config.plc.rack}
-                  onChange={(e) => setConfig({
-                    ...config,
-                    plc: { ...config.plc, rack: parseInt(e.target.value) || 0 }
-                  })}
-                  className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    isDarkMode 
-                      ? 'bg-gray-700 border-gray-600 text-white' 
-                      : 'bg-white border-gray-300 text-gray-900'
-                  }`}
-                  placeholder="0"
-                />
-              </div>
-              
-              <div>
-                <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Slot
-                </label>
-                <input
-                  type="number"
-                  value={config.plc.slot}
-                  onChange={(e) => setConfig({
-                    ...config,
-                    plc: { ...config.plc, slot: parseInt(e.target.value) || 1 }
-                  })}
-                  className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    isDarkMode 
-                      ? 'bg-gray-700 border-gray-600 text-white' 
-                      : 'bg-white border-gray-300 text-gray-900'
-                  }`}
-                  placeholder="1"
-                />
-              </div>
-            </div>
-
-            <div className="mt-6">
+        {/* Tabs */}
+        <div className={`border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'} pb-1 px-2 sm:px-0`}>
+          <nav className="-mb-px flex space-x-1 md:space-x-3 overflow-x-auto scrollbar-thin 
+            ${isDarkMode ? 'scrollbar-thumb-gray-600 scrollbar-track-gray-800' : 'scrollbar-thumb-gray-300 scrollbar-track-gray-100'} 
+            whitespace-nowrap pb-1`}">
+            {[
+              { id: 'plc', label: 'PLC', icon: Cpu, fullLabel: 'PLC Configuration' },
+              { id: 'email', label: 'Email', icon: Mail, fullLabel: 'Email Settings' },
+              { id: 'signals', label: 'Signals', icon: Settings, fullLabel: 'Signal Settings' },
+              { id: 'shifts', label: 'Shifts', icon: Clock, fullLabel: 'Shift Management' },
+              { id: 'mapping', label: 'Mapping', icon: Link, fullLabel: 'Pin Mapping' },
+              { id: 'thresholds', label: 'Thresholds', icon: BarChart2, fullLabel: 'Metrics Thresholds' }
+            ].map((tab) => (
               <button
-                onClick={() => handleConfigUpdate({ plc: config.plc })}
-                disabled={saving}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center space-x-1 py-2 px-2 md:px-3 border-b-2 font-medium text-xs md:text-sm transition-all ${
+                  activeTab === tab.id
+                    ? 'border-blue-500 text-blue-400'
+                    : `border-transparent ${isDarkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'}`
+                }`}
+                aria-label={tab.fullLabel}
               >
-                <Save className="h-4 w-4" />
-                <span>{saving ? 'Saving...' : 'Save PLC Settings'}</span>
+                <tab.icon className="h-4 w-4 flex-shrink-0" />
+                <span className="hidden sm:inline">{tab.label}</span>
+                <span className="sm:hidden">{tab.label.charAt(0)}</span>
               </button>
-            </div>
-          </div>
-        )}
+            ))}
+          </nav>
+        </div>
 
-        {/* Email Configuration */}
-        {activeTab === 'email' && config && (
-          <div className={`rounded-lg border p-4 sm:p-6 ${
-            isDarkMode 
-              ? 'bg-gray-800 border-gray-700' 
-              : 'bg-white border-gray-200 shadow-sm'
-          }`}>
-            <div className="flex items-center space-x-2 mb-4">
-              <Mail className="h-5 w-5 text-blue-400" />
-              <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Outlook Email Alert Settings</h2>
-            </div>
-            
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div>
-                  <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    Sender Email
-                  </label>
-                  <input
-                    type="email"
-                    value={config.email.senderEmail}
-                    onChange={(e) => setConfig({
-                      ...config,
-                      email: { ...config.email, senderEmail: e.target.value }
-                    })}
-                    className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                      isDarkMode 
-                        ? 'bg-gray-700 border-gray-600 text-white' 
-                        : 'bg-white border-gray-300 text-gray-900'
-                    }`}
-                    placeholder="alerts@company.com"
-                  />
-                </div>
-                
-                <div>
-                  <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    App Password
-                  </label>
-                  <input
-                    type="password"
-                    value={config.email.senderPassword}
-                    onChange={(e) => setConfig({
-                      ...config,
-                      email: { ...config.email, senderPassword: e.target.value }
-                    })}
-                    className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                      isDarkMode 
-                        ? 'bg-gray-700 border-gray-600 text-white' 
-                        : 'bg-white border-gray-300 text-gray-900'
-                    }`}
-                    placeholder="App-specific password"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Recipients (comma-separated)
-                </label>
-                  <textarea
-                    value={emailRecipients}
-                    onChange={(e) => setEmailRecipients(e.target.value)}
-                    rows={3}
-                    className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                      isDarkMode 
-                        ? 'bg-gray-700 border-gray-600 text-white' 
-                        : 'bg-white border-gray-300 text-gray-900'
-                    }`}
-                    placeholder="manager@company.com, operator@company.com"
-                  />
-              </div>
-            </div>
-
-            <div className="mt-6">
-              <button
-                onClick={() => {
-                  // Split into array only when saving
-                  const recipientsArray = emailRecipients
-                    .split(',')
-                    .map(email => email.trim())
-                    .filter(Boolean);
-                  
-                  handleConfigUpdate({
-                    email: {
-                      ...config.email,
-                      recipients: recipientsArray
-                    }
-                  });
-                }}
-                disabled={saving}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors"
-              >
-                <Save className="h-4 w-4" />
-                <span>{saving ? 'Saving...' : 'Save Email Settings'}</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Signal Settings Tab */}
-        {activeTab === 'signals' && config && (
-          <div className={`rounded-lg border p-4 sm:p-6 ${
-            isDarkMode 
-              ? 'bg-gray-800 border-gray-700' 
-              : 'bg-white border-gray-200 shadow-sm'
-          }`}>
-            <div className="flex items-center space-x-2 mb-4">
-              <Settings className="h-5 w-5 text-blue-400" />
-              <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Signal Timeout Settings</h2>
-            </div>
-            
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div>
-                <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Power Signal Timeout (minutes)
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="60"
-                  value={config.signalTimeouts?.powerSignalTimeout || 5}
-                  onChange={(e) => setConfig({
-                    ...config,
-                    signalTimeouts: {
-                      ...config.signalTimeouts,
-                      powerSignalTimeout: parseInt(e.target.value) || 5
-                    }
-                  })}
-                  className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    isDarkMode 
-                      ? 'bg-gray-700 border-gray-600 text-white' 
-                      : 'bg-white border-gray-300 text-gray-900'
-                  }`}
-                />
-                <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  Time after which machine is considered inactive if no power signal
-                </p>
-              </div>
-              
-              <div>
-                <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Cycle Signal Timeout (minutes)
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="60"
-                  value={config.signalTimeouts?.cycleSignalTimeout || 2}
-                  onChange={(e) => setConfig({
-                    ...config,
-                    signalTimeouts: {
-                      ...config.signalTimeouts,
-                      cycleSignalTimeout: parseInt(e.target.value) || 2
-                    }
-                  })}
-                  className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    isDarkMode 
-                      ? 'bg-gray-700 border-gray-600 text-white' 
-                      : 'bg-white border-gray-300 text-gray-900'
-                  }`}
-                />
-                <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  Time after which unclassified stoppage is detected if no cycle signal
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-6">
-              <button
-                onClick={() => handleConfigUpdate({ 
-                  signalTimeouts: config.signalTimeouts 
-                })}
-                disabled={saving}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors"
-              >
-                <Save className="h-4 w-4" />
-                <span>{saving ? 'Saving...' : 'Save Signal Settings'}</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Shift Management Tab */}
-        {activeTab === 'shifts' && config && (() => {
-          const shifts = config.shifts || [];
+        {/* Tab Content */}
+        <div className="space-y-6 px-2 sm:px-4">
           
-          return (
-            <div className="space-y-6">
-              {/* Add New Shift */}
+          {/* PLC Configuration */}
+          {activeTab === 'plc' && (
+            <form onSubmit={handleSubmit(onSubmit)}>
               <div className={`rounded-lg border p-4 sm:p-6 ${
                 isDarkMode 
                   ? 'bg-gray-800 border-gray-700' 
                   : 'bg-white border-gray-200 shadow-sm'
               }`}>
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center space-x-2">
-                    <Clock className="h-5 w-5 text-blue-400" />
-                    <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Shift Management</h2>
-                  </div>
-                  <button
-                    onClick={() => {
-                      const newShift = {
-                        name: `Shift ${shifts.length + 1}`,
-                        startTime: '08:00',
-                        endTime: '16:00',
-                        isActive: true
-                      };
-                      setConfig({
-                        ...config,
-                        shifts: [...shifts, newShift]
-                      });
-                    }}
-                    className="flex items-center space-x-2 px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
-                  >
-                    <Plus className="h-4 w-4" />
-                    <span>Add Shift</span>
-                  </button>
+                <div className="flex items-center space-x-2 mb-4">
+                  <Network className="h-5 w-5 text-blue-400" />
+                  <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>PLC Connection Settings</h2>
                 </div>
-
-                {shifts.length > 0 ? (
-                  <div className="space-y-4">
-                    {shifts.map((shift, index) => (
-                      <div key={index} className={`rounded-lg p-4 ${
-                        isDarkMode ? 'bg-gray-700' : 'bg-gray-50'
-                      }`}>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
-                          <div>
-                            <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                              Shift Name
-                            </label>
-                            <input
-                              type="text"
-                              value={shift.name}
-                              onChange={(e) => {
-                                const updatedShifts = [...shifts];
-                                updatedShifts[index].name = e.target.value;
-                                setConfig({ ...config, shifts: updatedShifts });
-                              }}
-                              className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                isDarkMode 
-                                  ? 'bg-gray-600 border-gray-500 text-white' 
-                                  : 'bg-white border-gray-300 text-gray-900'
-                              }`}
-                            />
-                          </div>
-                          
-                          <div>
-                            <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                              Start Time
-                            </label>
-                            <input
-                              type="time"
-                              value={shift.startTime}
-                              onChange={(e) => {
-                                const updatedShifts = [...shifts];
-                                updatedShifts[index].startTime = e.target.value;
-                                setConfig({ ...config, shifts: updatedShifts });
-                              }}
-                              className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                isDarkMode 
-                                  ? 'bg-gray-600 border-gray-500 text-white' 
-                                  : 'bg-white border-gray-300 text-gray-900'
-                              }`}
-                            />
-                          </div>
-                          
-                          <div>
-                            <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                              End Time
-                            </label>
-                            <input
-                              type="time"
-                              value={shift.endTime}
-                              onChange={(e) => {
-                                const updatedShifts = [...shifts];
-                                updatedShifts[index].endTime = e.target.value;
-                                setConfig({ ...config, shifts: updatedShifts });
-                              }}
-                              className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                isDarkMode 
-                                  ? 'bg-gray-600 border-gray-500 text-white' 
-                                  : 'bg-white border-gray-300 text-gray-900'
-                              }`}
-                            />
-                          </div>
-                          
-                          <div className="flex items-center space-x-2">
-                            <div className="flex items-center">
-                              <label className="relative inline-flex items-center cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={shift.isActive}
-                                onChange={(e) => {
-                                  const updatedShifts = [...shifts];
-                                  updatedShifts[index].isActive = e.target.checked;
-                                  setConfig({ ...config, shifts: updatedShifts });
-                                }}
-                                className="sr-only peer"
-                              />
-                              <div className={`relative w-11 h-6 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 ${
-                                isDarkMode ? 'bg-gray-600' : 'bg-gray-300'
-                              }`}></div>
-                              <span className={`ml-2 text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Active</span>
-                              </label>
-                            </div>
-                            
-                            <button
-                              onClick={() => {
-                                const updatedShifts = shifts.filter((_, i) => i !== index);
-                                setConfig({ ...config, shifts: updatedShifts });
-                              }}
-                              className={`p-1 ${isDarkMode ? 'text-red-400 hover:text-red-300' : 'text-red-500 hover:text-red-700'}`}
-                              title="Delete shift"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      IP Address
+                    </label>
+                    <Controller
+                      name="plc.ip"
+                      control={control}
+                      render={({ field }) => (
+                        <>
+                          <input
+                            {...field}
+                            type="text"
+                            className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                              isDarkMode 
+                                ? 'bg-gray-700 border-gray-600 text-white' 
+                                : 'bg-white border-gray-300 text-gray-900'
+                            } ${errors.plc?.ip ? 'border-red-500' : ''}`}
+                            placeholder="192.168.1.100"
+                          />
+                          {errors.plc?.ip && (
+                            <p className="text-red-500 text-xs mt-1">{errors.plc.ip.message}</p>
+                          )}
+                        </>
+                      )}
+                    />
                   </div>
-                ) : (
-                  <div className="text-center py-8">
-                    <Clock className={`h-12 w-12 mx-auto mb-4 ${isDarkMode ? 'text-gray-600' : 'text-gray-400'}`} />
-                    <p className={isDarkMode ? 'text-gray-400' : 'text-gray-600'}>No shifts configured</p>
-                    <p className={`text-sm mt-1 ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>Add your first shift to get started</p>
+                  
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Rack
+                    </label>
+                    <Controller
+                      name="plc.rack"
+                      control={control}
+                      render={({ field }) => (
+                        <>
+                          <input
+                            {...field}
+                            type="number"
+                            onChange={(e) => field.onChange(parseInt(e.target.value) || 0)}
+                            className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                              isDarkMode 
+                                ? 'bg-gray-700 border-gray-600 text-white' 
+                                : 'bg-white border-gray-300 text-gray-900'
+                            } ${errors.plc?.rack ? 'border-red-500' : ''}`}
+                            placeholder="0"
+                          />
+                          {errors.plc?.rack && (
+                            <p className="text-red-500 text-xs mt-1">{errors.plc.rack.message}</p>
+                          )}
+                        </>
+                      )}
+                    />
                   </div>
-                )}
+                  
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Slot
+                    </label>
+                    <Controller
+                      name="plc.slot"
+                      control={control}
+                      render={({ field }) => (
+                        <>
+                          <input
+                            {...field}
+                            type="number"
+                            onChange={(e) => field.onChange(parseInt(e.target.value) || 1)}
+                            className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                              isDarkMode 
+                                ? 'bg-gray-700 border-gray-600 text-white' 
+                                : 'bg-white border-gray-300 text-gray-900'
+                            } ${errors.plc?.slot ? 'border-red-500' : ''}`}
+                            placeholder="1"
+                          />
+                          {errors.plc?.slot && (
+                            <p className="text-red-500 text-xs mt-1">{errors.plc.slot.message}</p>
+                          )}
+                        </>
+                      )}
+                    />
+                  </div>
+                </div>
 
                 <div className="mt-6">
                   <button
-                    onClick={() => handleConfigUpdate({ shifts })}
+                    type="submit"
                     disabled={saving}
                     className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors"
                   >
                     <Save className="h-4 w-4" />
-                    <span>{saving ? 'Saving...' : 'Save Shifts'}</span>
+                    <span>{saving ? 'Saving...' : 'Save PLC Settings'}</span>
                   </button>
                 </div>
               </div>
-            </div>
-          );
-        })()}
+            </form>
+          )}
 
-        {/* Pin Mapping */}
-        {activeTab === 'mapping' && (
+          {/* Email Configuration */}
+          {activeTab === 'email' && (
+            <form onSubmit={handleSubmit(onSubmit)}>
+              <div className={`rounded-lg border p-4 sm:p-6 ${
+                isDarkMode 
+                  ? 'bg-gray-800 border-gray-700' 
+                  : 'bg-white border-gray-200 shadow-sm'
+              }`}>
+                <div className="flex items-center space-x-2 mb-4">
+                  <Mail className="h-5 w-5 text-blue-400" />
+                  <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Outlook Email Alert Settings</h2>
+                </div>
+                
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div>
+                      <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                        Sender Email
+                      </label>
+                      <Controller
+                        name="email.senderEmail"
+                        control={control}
+                        render={({ field }) => (
+                          <>
+                            <input
+                              {...field}
+                              type="email"
+                              className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                isDarkMode 
+                                  ? 'bg-gray-700 border-gray-600 text-white' 
+                                  : 'bg-white border-gray-300 text-gray-900'
+                              } ${errors.email?.senderEmail ? 'border-red-500' : ''}`}
+                              placeholder="alerts@company.com"
+                            />
+                            {errors.email?.senderEmail && (
+                              <p className="text-red-500 text-xs mt-1">{errors.email.senderEmail.message}</p>
+                            )}
+                          </>
+                        )}
+                      />
+                    </div>
+                    
+                    <div>
+                      <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                        App Password
+                      </label>
+                      <Controller
+                        name="email.senderPassword"
+                        control={control}
+                        render={({ field }) => (
+                          <>
+                            <input
+                              {...field}
+                              type="password"
+                              className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                isDarkMode 
+                                  ? 'bg-gray-700 border-gray-600 text-white' 
+                                  : 'bg-white border-gray-300 text-gray-900'
+                              } ${errors.email?.senderPassword ? 'border-red-500' : ''}`}
+                              placeholder="App-specific password"
+                            />
+                            {errors.email?.senderPassword && (
+                              <p className="text-red-500 text-xs mt-1">{errors.email.senderPassword.message}</p>
+                            )}
+                          </>
+                        )}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Recipients (comma-separated)
+                    </label>
+                    <Controller
+                      name="email.recipients"
+                      control={control}
+                      render={({ field: { value, onChange } }) => (
+                        <>
+                          <textarea
+                            value={value.join(', ')}
+                            onChange={(e) => {
+                              const recipients = e.target.value
+                                .split(',')
+                                .map(email => email.trim())
+                                .filter(Boolean);
+                              onChange(recipients);
+                            }}
+                            rows={3}
+                            className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                              isDarkMode 
+                                ? 'bg-gray-700 border-gray-600 text-white' 
+                                : 'bg-white border-gray-300 text-gray-900'
+                            } ${errors.email?.recipients ? 'border-red-500' : ''}`}
+                            placeholder="manager@company.com, operator@company.com"
+                          />
+                          {errors.email?.recipients && (
+                            <p className="text-red-500 text-xs mt-1">
+                              {errors.email.recipients.message || 
+                               errors.email.recipients[0]?.message}
+                            </p>
+                          )}
+                        </>
+                      )}
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-6">
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    <Save className="h-4 w-4" />
+                    <span>{saving ? 'Saving...' : 'Save Email Settings'}</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
+
+          {/* Signal Settings Tab */}
+          {activeTab === 'signals' && (
+            <form onSubmit={handleSubmit(onSubmit)}>
+              <div className={`rounded-lg border p-4 sm:p-6 ${
+                isDarkMode 
+                  ? 'bg-gray-800 border-gray-700' 
+                  : 'bg-white border-gray-200 shadow-sm'
+              }`}>
+                <div className="flex items-center space-x-2 mb-4">
+                  <Settings className="h-5 w-5 text-blue-400" />
+                  <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Signal Timeout Settings</h2>
+                </div>
+                
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Power Signal Timeout (minutes)
+                    </label>
+                    <Controller
+                      name="signalTimeouts.powerSignalTimeout"
+                      control={control}
+                      render={({ field }) => (
+                        <>
+                          <input
+                            {...field}
+                            type="number"
+                            min="1"
+                            max="60"
+                            onChange={(e) => field.onChange(parseInt(e.target.value) || 5)}
+                            className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                              isDarkMode 
+                                ? 'bg-gray-700 border-gray-600 text-white' 
+                                : 'bg-white border-gray-300 text-gray-900'
+                            } ${errors.signalTimeouts?.powerSignalTimeout ? 'border-red-500' : ''}`}
+                          />
+                          {errors.signalTimeouts?.powerSignalTimeout && (
+                            <p className="text-red-500 text-xs mt-1">
+                              {errors.signalTimeouts.powerSignalTimeout.message}
+                            </p>
+                          )}
+                        </>
+                      )}
+                    />
+                    <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      Time after which machine is considered inactive if no power signal
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      Cycle Signal Timeout (minutes)
+                    </label>
+                    <Controller
+                      name="signalTimeouts.cycleSignalTimeout"
+                      control={control}
+                      render={({ field }) => (
+                        <>
+                          <input
+                            {...field}
+                            type="number"
+                            min="1"
+                            max="60"
+                            onChange={(e) => field.onChange(parseInt(e.target.value) || 2)}
+                            className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                              isDarkMode 
+                                ? 'bg-gray-700 border-gray-600 text-white' 
+                                : 'bg-white border-gray-300 text-gray-900'
+                            } ${errors.signalTimeouts?.cycleSignalTimeout ? 'border-red-500' : ''}`}
+                          />
+                          {errors.signalTimeouts?.cycleSignalTimeout && (
+                            <p className="text-red-500 text-xs mt-1">
+                              {errors.signalTimeouts.cycleSignalTimeout.message}
+                            </p>
+                          )}
+                        </>
+                      )}
+                    />
+                    <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      Time after which unclassified stoppage is detected if no cycle signal
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-6">
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    <Save className="h-4 w-4" />
+                    <span>{saving ? 'Saving...' : 'Save Signal Settings'}</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
+
+          {/* Shift Management Tab */}
+          {activeTab === 'shifts' && (
+            <form onSubmit={handleSubmit(onSubmit)}>
+              <div className="space-y-6">
+                <div className={`rounded-lg border p-4 sm:p-6 ${
+                  isDarkMode 
+                    ? 'bg-gray-800 border-gray-700' 
+                    : 'bg-white border-gray-200 shadow-sm'
+                }`}>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center space-x-2">
+                      <Clock className="h-5 w-5 text-blue-400" />
+                      <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Shift Management</h2>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => append({
+                        name: `Shift ${fields.length + 1}`,
+                        startTime: '08:00',
+                        endTime: '16:00',
+                        isActive: true
+                      })}
+                      className="flex items-center space-x-2 px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                    >
+                      <Plus className="h-4 w-4" />
+                      <span>Add Shift</span>
+                    </button>
+                  </div>
+
+                  {fields.length > 0 ? (
+                    <div className="space-y-4">
+                      {fields.map((field, index) => (
+                        <div key={field.id} className={`rounded-lg p-4 ${
+                          isDarkMode ? 'bg-gray-700' : 'bg-gray-50'
+                        }`}>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
+                            <div>
+                              <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                Shift Name
+                              </label>
+                              <Controller
+                                name={`shifts.${index}.name`}
+                                control={control}
+                                render={({ field }) => (
+                                  <>
+                                    <input
+                                      {...field}
+                                      className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                        isDarkMode 
+                                          ? 'bg-gray-600 border-gray-500 text-white' 
+                                          : 'bg-white border-gray-300 text-gray-900'
+                                      } ${errors.shifts?.[index]?.name ? 'border-red-500' : ''}`}
+                                    />
+                                    {errors.shifts?.[index]?.name && (
+                                      <p className="text-red-500 text-xs mt-1">
+                                        {errors.shifts[index]?.name?.message}
+                                      </p>
+                                    )}
+                                  </>
+                                )}
+                              />
+                            </div>
+                            
+                            <div>
+                              <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                Start Time
+                              </label>
+                              <Controller
+                                name={`shifts.${index}.startTime`}
+                                control={control}
+                                render={({ field }) => (
+                                  <>
+                                    <input
+                                      {...field}
+                                      type="time"
+                                      className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                        isDarkMode 
+                                          ? 'bg-gray-600 border-gray-500 text-white' 
+                                          : 'bg-white border-gray-300 text-gray-900'
+                                      } ${errors.shifts?.[index]?.startTime ? 'border-red-500' : ''}`}
+                                    />
+                                    {errors.shifts?.[index]?.startTime && (
+                                      <p className="text-red-500 text-xs mt-1">
+                                        {errors.shifts[index]?.startTime?.message}
+                                      </p>
+                                    )}
+                                  </>
+                                )}
+                              />
+                            </div>
+                            
+                            <div>
+                              <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                End Time
+                              </label>
+                              <Controller
+                                name={`shifts.${index}.endTime`}
+                                control={control}
+                                render={({ field }) => (
+                                  <>
+                                    <input
+                                      {...field}
+                                      type="time"
+                                      className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                        isDarkMode 
+                                          ? 'bg-gray-600 border-gray-500 text-white' 
+                                          : 'bg-white border-gray-300 text-gray-900'
+                                      } ${errors.shifts?.[index]?.endTime ? 'border-red-500' : ''}`}
+                                    />
+                                    {errors.shifts?.[index]?.endTime && (
+                                      <p className="text-red-500 text-xs mt-1">
+                                        {errors.shifts[index]?.endTime?.message}
+                                      </p>
+                                    )}
+                                  </>
+                                )}
+                              />
+                            </div>
+                            
+                            <div className="flex items-center space-x-2">
+                              <div className="flex items-center">
+                                <Controller
+                                  name={`shifts.${index}.isActive`}
+                                  control={control}
+                                  render={({ field }) => (
+                                    <label className="relative inline-flex items-center cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={field.value}
+                                        onChange={(e) => field.onChange(e.target.checked)}
+                                        className="sr-only peer"
+                                      />
+                                      <div className={`relative w-11 h-6 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 ${
+                                        isDarkMode ? 'bg-gray-600' : 'bg-gray-300'
+                                      }`}></div>
+                                      <span className={`ml-2 text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Active</span>
+                                    </label>
+                                  )}
+                                />
+                              </div>
+                              
+                              <button
+                                type="button"
+                                onClick={() => remove(index)}
+                                className={`p-1 ${isDarkMode ? 'text-red-400 hover:text-red-300' : 'text-red-500 hover:text-red-700'}`}
+                                title="Delete shift"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8">
+                      <Clock className={`h-12 w-12 mx-auto mb-4 ${isDarkMode ? 'text-gray-600' : 'text-gray-400'}`} />
+                      <p className={isDarkMode ? 'text-gray-400' : 'text-gray-600'}>No shifts configured</p>
+                      <p className={`text-sm mt-1 ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>Add your first shift to get started</p>
+                    </div>
+                  )}
+
+                  <div className="mt-6">
+                    <button
+                      type="submit"
+                      disabled={saving}
+                      className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                    >
+                      <Save className="h-4 w-4" />
+                      <span>{saving ? 'Saving...' : 'Save Shifts'}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </form>
+          )}
+
+          {/* Pin Mapping */}
+          {activeTab === 'mapping' && (
           <div className="space-y-6">
             {/* Add New Mapping */}
             <div className={`rounded-lg border p-4 sm:p-6 ${
@@ -842,134 +1033,139 @@ const Configuration: React.FC = () => {
               </div>
             )}
           </div>
-        )}
+           )}
 
-        {/* Metrics Thresholds Tab */}
-        {activeTab === 'thresholds' && config && config.metricsThresholds && (
-          <div className={`rounded-lg border p-4 sm:p-6 ${
-            isDarkMode 
-              ? 'bg-gray-800 border-gray-700' 
-              : 'bg-white border-gray-200 shadow-sm'
-          }`}>
-            <div className="flex items-center space-x-2 mb-4">
-              <BarChart2 className="h-5 w-5 text-blue-400" />
-              <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                Performance Metric Thresholds
-              </h2>
-            </div>
-            
-            <div className="space-y-5">
-              {(['oee', 'availability', 'quality', 'performance', 'mtbf', 'mttr', 'reliability'] as MetricKey[]).map(metric => {
-                const unit = ['oee', 'availability', 'quality', 'performance'].includes(metric) 
-                  ? '%' 
-                  : 'min';
-                  
-                return (
-                  <div 
-                    key={metric}
-                    className={`rounded-lg p-4 border ${
-                      isDarkMode 
-                        ? 'bg-gray-750 border-gray-600' 
-                        : 'bg-gray-50 border-gray-200'
-                    }`}
-                  >
-                    <h3 className={`text-md font-medium mb-3 flex items-center ${
-                      isDarkMode ? 'text-blue-300' : 'text-blue-600'
-                    }`}>
-                      <span className="capitalize">{metric}</span>
-                      <span className="ml-2 text-xs px-2 py-1 rounded ${
-                        isDarkMode 
-                          ? 'bg-blue-900/30 text-blue-200' 
-                          : 'bg-blue-100 text-blue-700'
-                      }">
-                        {unit}
-                      </span>
-                    </h3>
+
+          {/* Metrics Thresholds Tab */}
+          {activeTab === 'thresholds' && (
+            <form onSubmit={handleSubmit(onSubmit)}>
+              <div className={`rounded-lg border p-4 sm:p-6 ${
+                isDarkMode 
+                  ? 'bg-gray-800 border-gray-700' 
+                  : 'bg-white border-gray-200 shadow-sm'
+              }`}>
+                <div className="flex items-center space-x-2 mb-4">
+                  <BarChart2 className="h-5 w-5 text-blue-400" />
+                  <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                    Performance Metric Thresholds
+                  </h2>
+                </div>
+                
+                <div className="space-y-5">
+                  {(['oee', 'availability', 'quality', 'performance', 'mtbf', 'mttr', 'reliability'] as MetricKey[]).map(metric => {
+                    const unit = ['oee', 'availability', 'quality', 'performance'].includes(metric) 
+                      ? '%' 
+                      : 'min';
                     
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      {(['excellent', 'good', 'fair'] as LevelKey[]).map((level, idx) => {
-                        // Border colors for visual distinction
-                        const borderColors = [
-                          isDarkMode ? 'border-green-500' : 'border-green-400',
-                          isDarkMode ? 'border-yellow-500' : 'border-yellow-400',
-                          isDarkMode ? 'border-orange-500' : 'border-orange-400'
-                        ];
+                    return (
+                      <div 
+                        key={metric}
+                        className={`rounded-lg p-4 border ${
+                          isDarkMode 
+                            ? 'bg-gray-750 border-gray-600' 
+                            : 'bg-gray-50 border-gray-200'
+                        }`}
+                      >
+                        <h3 className={`text-md font-medium mb-3 flex items-center ${
+                          isDarkMode ? 'text-blue-300' : 'text-blue-600'
+                        }`}>
+                          <span className="capitalize">{metric}</span>
+                          <span className="ml-2 text-xs px-2 py-1 rounded ${
+                            isDarkMode 
+                              ? 'bg-blue-900/30 text-blue-200' 
+                              : 'bg-blue-100 text-blue-700'
+                          }">
+                            {unit}
+                          </span>
+                        </h3>
                         
-                        return (
-                          <div 
-                            key={`${metric}-${level}`} 
-                            className={`border-l-4 rounded-r p-3 ${
-                              borderColors[idx]
-                            } ${
-                              isDarkMode 
-                                ? 'bg-gray-700' 
-                                : 'bg-white'
-                            }`}
-                          >
-                            <label className={`block text-sm font-medium mb-1 ${
-                              isDarkMode ? 'text-gray-300' : 'text-gray-700'
-                            }`}>
-                              <span className="capitalize">{level}</span>
-                              <span className="text-xs ml-1 ${
-                                isDarkMode ? 'text-gray-400' : 'text-gray-500'
-                              }">
-                                ({level === 'excellent' ? '≥' : level === 'good' ? '≥' : level === 'fair'  ? '≥' : '<'})
-                              </span>
-                            </label>
-                            <div className="flex">
-                              <input
-                                type="number"
-                                value={config.metricsThresholds[metric][level]}
-                                onChange={(e) => {
-                                  const value = parseInt(e.target.value) || 0;
-                                  setConfig({
-                                    ...config,
-                                    metricsThresholds: {
-                                      ...config.metricsThresholds,
-                                      [metric]: {
-                                        ...config.metricsThresholds[metric],
-                                        [level]: value
-                                      }
-                                    }
-                                  });
-                                }}
-                                className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          {(['excellent', 'good', 'fair'] as LevelKey[]).map((level, idx) => {
+                            // Border colors for visual distinction
+                            const borderColors = [
+                              isDarkMode ? 'border-green-500' : 'border-green-400',
+                              isDarkMode ? 'border-yellow-500' : 'border-yellow-400',
+                              isDarkMode ? 'border-orange-500' : 'border-orange-400'
+                            ];
+                            
+                            return (
+                              <div 
+                                key={`${metric}-${level}`} 
+                                className={`border-l-4 rounded-r p-3 ${
+                                  borderColors[idx]
+                                } ${
                                   isDarkMode 
-                                    ? 'bg-gray-600 border-gray-500 text-white' 
-                                    : 'bg-white border-gray-300 text-gray-900'
+                                    ? 'bg-gray-700' 
+                                    : 'bg-white'
                                 }`}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    
-                    <div className={`text-xs mt-3 ${
-                      isDarkMode ? 'text-gray-400' : 'text-gray-600'
-                    }`}>
-                      {metric === 'mttr' && "Mean Time To Repair (lower is better)"}
-                      {metric === 'mtbf' && "Mean Time Between Failures (higher is better)"}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                              >
+                                <label className={`block text-sm font-medium mb-1 ${
+                                  isDarkMode ? 'text-gray-300' : 'text-gray-700'
+                                }`}>
+                                  <span className="capitalize">{level}</span>
+                                  <span className="text-xs ml-1 ${
+                                    isDarkMode ? 'text-gray-400' : 'text-gray-500'
+                                  }">
+                                    ({level === 'excellent' ? '≥' : level === 'good' ? '≥' : level === 'fair'  ? '≥' : '<'})
+                                  </span>
+                                </label>
+                                <div className="flex">
+                                  <Controller
+                                    name={`metricsThresholds.${metric}.${level}`}
+                                    control={control}
+                                    render={({ field }) => (
+                                      <>
+                                        <input
+                                          {...field}
+                                          type="number"
+                                          onChange={(e) => field.onChange(parseInt(e.target.value) || 0)}
+                                          className={`w-full rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                            isDarkMode 
+                                              ? 'bg-gray-600 border-gray-500 text-white' 
+                                              : 'bg-white border-gray-300 text-gray-900'
+                                          } ${errors.metricsThresholds?.[metric]?.[level] ? 'border-red-500' : ''}`}
+                                        />
+                                        {errors.metricsThresholds?.[metric]?.[level] && (
+                                          <p className="text-red-500 text-xs mt-1">
+                                            {errors.metricsThresholds[metric]?.[level]?.message}
+                                          </p>
+                                        )}
+                                      </>
+                                    )}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        
+                        <div className={`text-xs mt-3 ${
+                          isDarkMode ? 'text-gray-400' : 'text-gray-600'
+                        }`}>
+                          {metric === 'mttr' && "Mean Time To Repair (lower is better)"}
+                          {metric === 'mtbf' && "Mean Time Between Failures (higher is better)"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
 
-            <div className="mt-6">
-              <button
-                onClick={() => handleConfigUpdate({ metricsThresholds: config.metricsThresholds })}
-                disabled={saving}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors"
-              >
-                <Save className="h-4 w-4" />
-                <span>{saving ? 'Saving...' : 'Save Thresholds'}</span>
-              </button>
-            </div>
-          </div>
-        )}
+                <div className="mt-6">
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    <Save className="h-4 w-4" />
+                    <span>{saving ? 'Saving...' : 'Save Thresholds'}</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
+        </div>
       </div>
-    </div>
+    </FormProvider>
   );
 };
 
