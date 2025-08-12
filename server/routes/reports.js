@@ -28,6 +28,9 @@ router.post('/generate', auth, async (req, res) => {
       generatedBy: req.user._id
     });
 
+    // Clean up old reports after generating a new one
+    await cleanupOldReports();
+
     res.json(report);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -148,6 +151,27 @@ router.delete('/:id', auth, adminAuth, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
+
+async function cleanupOldReports() {
+  try {
+    // Get the count of reports
+    const reportCount = await Report.countDocuments();
+    
+    // If we have more than 10 reports, delete the oldest ones
+    if (reportCount > 10) {
+      const reportsToKeep = 10;
+      const oldestReports = await Report.find()
+        .sort({ createdAt: 1 }) // Sort by oldest first
+        .limit(reportCount - reportsToKeep)
+        .select('_id');
+      
+      const idsToDelete = oldestReports.map(r => r._id);
+      await Report.deleteMany({ _id: { $in: idsToDelete } });
+    }
+  } catch (error) {
+    console.error('Error cleaning up old reports:', error);
+  }
+}
 
 async function generateReport({ type, startDate, endDate, departmentId, machineId, generatedBy }) {
   // Validate ObjectIds
@@ -1112,7 +1136,6 @@ doc.fontSize(9)
   });
 }
 
-// Helper functions
 function getOEEColor(oee, config) {
   if (!config?.metricsThresholds?.oee) return '#ef4444';
   if (oee >= config.metricsThresholds.oee.excellent) return '#10b981';
@@ -1161,7 +1184,6 @@ function getReliabilityColor(ratio, config) {
   if (ratio >= config.metricsThresholds.reliability.fair) return '#f97316';
   return '#ef4444';
 }
-
 
 function getReliabilityStatus(ratio, config) {
   if (!config?.metricsThresholds?.reliability) return 'POOR RELIABILITY';

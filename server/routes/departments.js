@@ -15,8 +15,11 @@ router.get('/', auth, async (req, res) => {
       query._id = req.user.departmentId._id;
     }
 
-    // Use aggregation pipeline for better performance
-    const departments = await Department.aggregate([
+    // Parse limit from query params, default to no limit
+    const limit = req.query.limit ? parseInt(req.query.limit.toString()) : null;
+
+    // Build aggregation pipeline
+    const pipeline = [
       { $match: query },
       {
         $lookup: {
@@ -35,8 +38,14 @@ router.get('/', auth, async (req, res) => {
           machineCount: { $size: '$machines' }
         }
       }
-    ]);
+    ];
+
+    // Add limit if specified
+    if (limit) {
+      pipeline.push({ $limit: limit });
+    }
     
+    const departments = await Department.aggregate(pipeline);
     res.json(departments);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });

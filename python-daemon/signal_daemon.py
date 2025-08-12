@@ -105,7 +105,7 @@ class SignalDaemon:
                 "url": "http://localhost:3001"
             },
             "daemon": {
-                "interval_seconds": 0.2,  # Send signals every 2 seconds
+                "interval_seconds": 2,  # Send signals every 2 seconds
                 "retry_attempts": 3,
                 "retry_delay": 5
             },

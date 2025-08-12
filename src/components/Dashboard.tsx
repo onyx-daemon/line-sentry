@@ -66,9 +66,10 @@ const Dashboard: React.FC = () => {
 
   const fetchDepartments = async () => {
     try {
-      const data = await apiService.getDepartments();
+      // Pass limit=10 parameter to get only 10 departments
+      const data = await apiService.getDepartment('?limit=10');
       const departmentsWithOEE = await Promise.all(data.map(async (dept: any) => {
-      const stats = await apiService.getDepartmentStats(dept._id);
+        const stats = await apiService.getDepartmentStats(dept._id);
         return { ...dept, avgOEE: stats.avgOEE };
       }));
 
@@ -81,18 +82,18 @@ const Dashboard: React.FC = () => {
   };
 
   const fetchFactoryStats = async () => {
-  try {
-    const stats = await apiService.getFactoryStats();
-    setFactoryStats({
-      totalUnits: stats.totalUnits,
-      avgOEE: stats.avgOEE,
-      unclassifiedStoppages: stats.unclassifiedStoppages,
-      activeMachines: stats.activeMachines
-    });
-  } catch (err) {
-    console.error('Failed to fetch factory stats:', err);
-  }
-};
+    try {
+      const stats = await apiService.getFactoryStats();
+      setFactoryStats({
+        totalUnits: stats.totalUnits,
+        avgOEE: stats.avgOEE,
+        unclassifiedStoppages: stats.unclassifiedStoppages,
+        activeMachines: stats.activeMachines
+      });
+    } catch (err) {
+      console.error('Failed to fetch factory stats:', err);
+    }
+  };
 
   const handleDepartmentClick = (departmentId: string) => {
     navigate(`/department/${departmentId}`);

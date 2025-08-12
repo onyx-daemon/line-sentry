@@ -92,8 +92,11 @@ class ApiService {
   }
 
   // Departments
-  async getDepartments() {
-    return this.request('/departments');
+  async getDepartments(limit?: number) {
+    return this.request('/departments', {
+      method: 'GET',
+      params: limit ? { limit } : undefined
+    });
   }
 
   async getDepartment(id: string) {
