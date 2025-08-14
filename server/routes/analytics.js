@@ -131,7 +131,7 @@ async function calculateMachineStats(machineId, period) {
     ? (stats.totalUnitsProduced - stats.totalDefectiveUnits) / stats.totalUnitsProduced
     : 0;
   
-  // CORRECTED: Use aggregated totalExpectedUnits
+  // Use aggregated totalExpectedUnits
   const performance = stats.totalExpectedUnits > 0 
     ? stats.totalUnitsProduced / stats.totalExpectedUnits
     : 0;
@@ -426,77 +426,119 @@ router.post('/stoppage', auth, async (req, res) => {
   }
 });
 
-// Update production assignment
+// Production assignment
 router.post('/production-assignment', auth, async (req, res) => {
   try {
     const { machineId, hour, date, operatorId, moldId, defectiveUnits, applyToShift } = req.body;
     const io = req.app.get('io');
     
-    // Validate IDs
-    const User = require('../models/User');
-    let validOperatorId;
-    if (operatorId) {
-      if (mongoose.Types.ObjectId.isValid(operatorId)) {
-        validOperatorId = operatorId;
-      } else {
-        const user = await User.findOne({ username: operatorId }, '_id').lean();
-        if (user) validOperatorId = user._id;
-        else return res.status(400).json({ message: 'Invalid operator' });
-      }
-    }
-
-    let validMoldId;
-    if (moldId && !mongoose.Types.ObjectId.isValid(moldId)) {
-      return res.status(400).json({ message: 'Invalid mold ID' });
-    }
-    validMoldId = moldId;
-
-    // Permission check
-    if (req.user.role === 'operator' && validOperatorId && validOperatorId !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Can only assign yourself' });
-    }
-
-    // Date range for query
-    const dayStart = new Date(`${date}T00:00:00.000Z`);
-    const dayEnd = new Date(`${date}T23:59:59.999Z`);
+    // Validate and convert operatorId to ObjectId if provided
+    let validOperatorId = undefined;
     
-    // Find or create record
-    let productionRecord = await ProductionRecord.findOneAndUpdate(
-      { machineId, startTime: { $gte: dayStart, $lt: dayEnd } },
-      {},
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-
-    // Get shift hours if needed
-    let hoursToUpdate = [hour];
-    if (applyToShift) {
-      const config = await Config.findOne().select('shifts').lean();
-      const shift = config?.shifts?.find(s => {
-        const [startH] = s.startTime.split(':').map(Number);
-        const [endH] = s.endTime.split(':').map(Number);
-        return (startH <= hour && hour < endH) || 
-               (startH > endH && (hour >= startH || hour < endH));
-      });
-      
-      if (shift) {
-        const [startH] = shift.startTime.split(':').map(Number);
-        const [endH] = shift.endTime.split(':').map(Number);
-        
-        hoursToUpdate = [];
-        if (startH < endH) {
-          for (let h = startH; h < endH; h++) hoursToUpdate.push(h);
+    if (operatorId && operatorId.trim() !== '') {
+      // Check if it's already a valid ObjectId
+      if (mongoose.Types.ObjectId.isValid(operatorId)) {
+        validOperatorId = new mongoose.Types.ObjectId(operatorId);
+      } else {
+        // Try to find user by username
+        const User = require('../models/User');
+        const user = await User.findOne({ username: operatorId });
+        if (user) {
+          validOperatorId = user._id;
         } else {
-          for (let h = startH; h < 24; h++) hoursToUpdate.push(h);
-          for (let h = 0; h < endH; h++) hoursToUpdate.push(h);
+          return res.status(400).json({ message: 'Invalid operator specified' });
         }
       }
     }
 
-    // Update hours in bulk
+    // Validate and convert moldId to ObjectId if provided
+    let validMoldId = undefined;
+    if (moldId && moldId.trim() !== '') {
+      if (mongoose.Types.ObjectId.isValid(moldId)) {
+        validMoldId = new mongoose.Types.ObjectId(moldId);
+      } else {
+        return res.status(400).json({ message: 'Invalid mold ID specified' });
+      }
+    }
+    
+    // Find production record
+    let productionRecord = await ProductionRecord.findOne({
+      machineId,
+      startTime: {
+        $gte: new Date(date + 'T00:00:00.000Z'),
+        $lt: new Date(date + 'T23:59:59.999Z')
+      }
+    });
+
+    if (!productionRecord) {
+      productionRecord = new ProductionRecord({
+        machineId,
+        startTime: new Date(date + 'T00:00:00.000Z'),
+        hourlyData: []
+      });
+    }
+
+    // Get shift configuration
+    const config = await Config.findOne();
+    const shifts = config?.shifts || [];
+    
+    // Determine hours to update
+    let hoursToUpdate = [hour];
+    if (applyToShift) {
+      // Find shift that contains the current hour
+      const shift = shifts.find(s => {
+        const startHour = parseInt(s.startTime.split(':')[0]);
+        const endHour = parseInt(s.endTime.split(':')[0]);
+        
+        if (startHour <= endHour) {
+          return hour >= startHour && hour < endHour;
+        } else {
+          return hour >= startHour || hour < endHour;
+        }
+      });
+
+      if (applyToShift && shift) {
+        const startHour = parseInt(shift.startTime.split(':')[0]);
+        const endHour = parseInt(shift.endTime.split(':')[0]);
+        
+        hoursToUpdate = [];
+        
+        if (startHour <= endHour) {
+          for (let h = startHour; h < endHour; h++) {
+            hoursToUpdate.push(h);
+          }
+        } else {
+          // Night shift (crosses midnight)
+          if (hour >= startHour) {
+            // First part (current day)
+            for (let h = startHour; h < 24; h++) {
+              hoursToUpdate.push(h);
+            }
+          } else if (hour < endHour) {
+            // Second part (current day)
+            for (let h = 0; h < endHour; h++) {
+              hoursToUpdate.push(h);
+            }
+          }
+        }
+      }
+    }
+
+    // Permission check for operators
+    if (req.user.role === 'operator') {
+      const currentUserId = req.user._id.toString();
+      
+      // Operators can only assign themselves
+      if (validOperatorId && validOperatorId.toString() !== currentUserId) {
+        return res.status(403).json({ message: 'Operators can only assign themselves' });
+      }
+    }
+
     for (const targetHour of hoursToUpdate) {
       let hourData = productionRecord.hourlyData.find(h => h.hour === targetHour);
       
       if (!hourData) {
+        // Create new entry
         hourData = {
           hour: targetHour,
           unitsProduced: 0,
@@ -506,28 +548,64 @@ router.post('/production-assignment', auth, async (req, res) => {
           stoppageMinutes: 0,
           stoppages: []
         };
+        
+        // Set assignments for new entry
+        if (validOperatorId !== undefined) {
+          hourData.operatorId = validOperatorId;
+        }
+        
+        if (validMoldId !== undefined) {
+          hourData.moldId = validMoldId;
+        }
+        
+        if (targetHour === hour && defectiveUnits !== undefined) {
+          hourData.defectiveUnits = defectiveUnits;
+        }
+        
         productionRecord.hourlyData.push(hourData);
-      }
-
-      // Update fields
-      if (validOperatorId !== undefined) {
-        hourData.operatorId = validOperatorId || undefined;
-      }
-      if (validMoldId !== undefined) {
-        hourData.moldId = validMoldId || undefined;
-      }
-      if (targetHour === hour && defectiveUnits !== undefined) {
-        hourData.defectiveUnits = defectiveUnits;
+      } else {
+        // Update existing entry
+        if (validOperatorId !== undefined) {
+          hourData.operatorId = validOperatorId;
+        } else {
+          // Unassign operator by removing the field
+          hourData.operatorId = undefined;
+          delete hourData.operatorId;
+        }
+        
+        if (validMoldId !== undefined) {
+          hourData.moldId = validMoldId;
+        } else {
+          // Unassign mold by removing the field
+          hourData.moldId = undefined;
+          delete hourData.moldId;
+        }
+        
+        if (targetHour === hour && defectiveUnits !== undefined) {
+          hourData.defectiveUnits = defectiveUnits;
+        }
+        
       }
     }
 
-    // Optimized totals calculation
-    productionRecord.unitsProduced = productionRecord.hourlyData.reduce((sum, h) => sum + (h.unitsProduced || 0), 0);
-    productionRecord.defectiveUnits = productionRecord.hourlyData.reduce((sum, h) => sum + (h.defectiveUnits || 0), 0);
+    // Mark document as modified
+    productionRecord.markModified('hourlyData');
 
+    // Update total units produced
+    productionRecord.unitsProduced = productionRecord.hourlyData.reduce(
+      (sum, h) => sum + (h.unitsProduced || 0), 
+      0
+    );
+
+    productionRecord.defectiveUnits = productionRecord.hourlyData.reduce(
+      (sum, h) => sum + (h.defectiveUnits || 0), 
+      0
+    );
+
+    // Save the production record
     await productionRecord.save();
 
-    // Socket event
+    // Emit socket event
     io.emit('production-assignment-updated', {
       machineId,
       hours: hoursToUpdate,
@@ -539,9 +617,9 @@ router.post('/production-assignment', auth, async (req, res) => {
       timestamp: new Date()
     });
 
-    res.json({ message: 'Assignment updated' });
+    res.json({ message: 'Production assignment updated successfully' });
   } catch (error) {
-    console.error('Assignment error:', error);
+    console.error('Error saving assignment:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
