@@ -18,6 +18,7 @@ import {
   ZapOff,
   Edit,
   Info,
+  ChevronDown,
 } from 'lucide-react';
 import { ThemeContext } from '../App';
 
@@ -38,6 +39,7 @@ const MachineView: React.FC = () => {
   });
   const [warnings, setWarnings] = useState<string[]>([]);
   const [currentLocalTime, setCurrentLocalTime] = useState(new Date());
+  const [showWarnings, setShowWarnings] = useState(false);
   // Tooltip state
   const [tooltip, setTooltip] = useState<{
     content: string;
@@ -432,21 +434,38 @@ const MachineView: React.FC = () => {
         </div>
       </div>
 
-      {/* Mold, Operator Assignment Warning */}
+      {/* Mold, Operator Assignment Warning - COLLAPSIBLE */}
       {warnings.length > 0 && (
-      <div className={`rounded-lg p-4 mb-6 ${
-        isDarkMode ? 'bg-yellow-900/30 border border-yellow-500' : 'bg-yellow-100 border border-yellow-300'
-      }`}>
-        <div className="flex items-center space-x-2 mb-2">
-          <AlertTriangle className={`h-5 w-5 ${isDarkMode ? 'text-yellow-400' : 'text-yellow-600'}`} />
-          <h3 className={`${isDarkMode ? 'text-yellow-400' : 'text-yellow-600'} font-medium`}>Assignment Warnings</h3>
+        <div 
+          className={`rounded-lg p-4 mb-6 cursor-pointer ${
+            isDarkMode 
+              ? 'bg-yellow-900/30 border border-yellow-500 hover:bg-yellow-900/40' 
+              : 'bg-yellow-100 border border-yellow-300 hover:bg-yellow-200'
+          } transition-colors`}
+          onClick={() => setShowWarnings(!showWarnings)}
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <AlertTriangle className={`h-5 w-5 ${isDarkMode ? 'text-yellow-400' : 'text-yellow-600'}`} />
+              <h3 className={`${isDarkMode ? 'text-yellow-400' : 'text-yellow-600'} font-medium`}>
+                Assignment Warnings ({warnings.length})
+              </h3>
+            </div>
+            <ChevronDown 
+              className={`h-5 w-5 transform transition-transform ${
+                showWarnings ? 'rotate-180' : ''
+              } ${isDarkMode ? 'text-yellow-400' : 'text-yellow-600'}`} 
+            />
+          </div>
+          
+          {showWarnings && (
+            <ul className={`list-disc pl-5 mt-3 ${isDarkMode ? 'text-yellow-300' : 'text-yellow-700'}`}>
+              {warnings.map((warning, index) => (
+                <li key={index}>{warning}</li>
+              ))}
+            </ul>
+          )}
         </div>
-        <ul className={`list-disc pl-5 ${isDarkMode ? 'text-yellow-300' : 'text-yellow-700'}`}>
-          {warnings.map((warning, index) => (
-            <li key={index}>{warning}</li>
-          ))}
-        </ul>
-      </div>
       )}
 
       {/* Key Metrics - Compact Layout */}
