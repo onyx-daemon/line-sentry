@@ -4,12 +4,12 @@
 
 /* Light mode styles */
 .light {
-  --bg-primary: #f1f5f9;
-  --bg-secondary: #f8fafc;
-  --text-primary: #334155;
-  --text-secondary: #64748b;
-  --border-color: #cbd5e1;
-}
+  --bg-primary: #f9fafb;
+  --bg-secondary: #ffffff;
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --border-color: #e5e7eb;
+} 
 
 /* Dark mode styles */
 .dark {
