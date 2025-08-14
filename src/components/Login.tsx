@@ -90,22 +90,22 @@ const Login: React.FC = () => {
     <div className={`min-h-screen flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8 ${
       isDarkMode 
         ? 'bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900' 
-        : 'bg-gradient-to-br from-blue-50 via-white to-blue-50'
+        : 'bg-gradient-to-br from-slate-100 via-slate-50 to-slate-100'
     }`}>
       <div className="max-w-md w-full space-y-8">
         <div className="text-center">
-          <div className="mx-auto h-16 w-16 bg-blue-600 rounded-full flex items-center justify-center">
+          <div className="mx-auto h-16 w-16 bg-slate-600 rounded-full flex items-center justify-center">
             <Factory className="h-8 w-8 text-white" />
           </div>
-          <h2 className={`mt-6 text-3xl font-extrabold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+          <h2 className={`mt-6 text-3xl font-extrabold ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>
             Dawlance | LineSentry
           </h2>
-          <p className={`mt-2 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+          <p className={`mt-2 text-sm ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
             Sign in to access your production dashboard
           </p>
           {showCaptcha && (
             <div className={`mt-2 flex items-center justify-center space-x-2 text-xs ${
-              isDarkMode ? 'text-yellow-400' : 'text-amber-600'
+              isDarkMode ? 'text-yellow-400' : 'text-amber-700'
             }`}>
               <Shield className="h-4 w-4" />
               <span>Security verification required</span>
@@ -116,14 +116,14 @@ const Login: React.FC = () => {
         <div className={`py-8 px-6 shadow-xl rounded-lg border ${
           isDarkMode 
             ? 'bg-gray-800 border-gray-700' 
-            : 'bg-white border-gray-200'
+            : 'bg-slate-50 border-slate-200'
         }`}>
           <form className="space-y-6" onSubmit={handleSubmit}>
             {error && (
               <div className={`border border-red-500 px-4 py-3 rounded-md flex items-center ${
                 isDarkMode 
                   ? 'bg-red-900/50 text-red-300' 
-                  : 'bg-red-50 text-red-700'
+                  : 'bg-red-100 text-red-800'
               }`}>
                 <AlertCircle className="h-4 w-4 mr-2 flex-shrink-0" />
                 <span className="text-sm">{error}</span>
@@ -132,13 +132,13 @@ const Login: React.FC = () => {
 
             <div>
               <label htmlFor="username" className={`block text-sm font-medium mb-2 ${
-                isDarkMode ? 'text-gray-300' : 'text-gray-700'
+                isDarkMode ? 'text-gray-300' : 'text-slate-700'
               }`}>
                 Username
               </label>
               <div className="relative">
                 <div className={`absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none`}>
-                  <User className={`h-5 w-5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+                  <User className={`h-5 w-5 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`} />
                 </div>
                 <input
                   id="username"
@@ -151,7 +151,7 @@ const Login: React.FC = () => {
                   className={`block w-full pl-10 pr-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
                     isDarkMode 
                       ? 'border-gray-600 bg-gray-700 text-white placeholder-gray-400' 
-                      : 'border-gray-300 bg-white text-gray-900 placeholder-gray-500'
+                      : 'border-slate-300 bg-white text-slate-800 placeholder-slate-500'
                   }`}
                   placeholder="Enter your username"
                 />
@@ -160,13 +160,13 @@ const Login: React.FC = () => {
 
             <div>
               <label htmlFor="password" className={`block text-sm font-medium mb-2 ${
-                isDarkMode ? 'text-gray-300' : 'text-gray-700'
+                isDarkMode ? 'text-gray-300' : 'text-slate-700'
               }`}>
                 Password
               </label>
               <div className="relative">
                 <div className={`absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none`}>
-                  <Lock className={`h-5 w-5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+                  <Lock className={`h-5 w-5 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`} />
                 </div>
                 <input
                   id="password"
@@ -179,7 +179,7 @@ const Login: React.FC = () => {
                   className={`block w-full pl-10 pr-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
                     isDarkMode 
                       ? 'border-gray-600 bg-gray-700 text-white placeholder-gray-400' 
-                      : 'border-gray-300 bg-white text-gray-900 placeholder-gray-500'
+                      : 'border-slate-300 bg-white text-slate-800 placeholder-slate-500'
                   }`}
                   placeholder="Enter your password"
                 />
@@ -202,7 +202,7 @@ const Login: React.FC = () => {
               <button
                 type="submit"
                 disabled={loading || (showCaptcha && !captchaToken)}
-                className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-slate-600 hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {loading ? 'Signing in...' : 'Sign in'}
               </button>
@@ -244,7 +244,7 @@ const Login: React.FC = () => {
 
             {loginAttempts > 0 && (
               <div className={`mt-4 text-center text-xs ${
-                isDarkMode ? 'text-gray-400' : 'text-gray-500'
+                isDarkMode ? 'text-gray-400' : 'text-slate-500'
               }`}>
                 Login attempts: {loginAttempts}
                 {loginAttempts >= 2 && ' (CAPTCHA required)'}
