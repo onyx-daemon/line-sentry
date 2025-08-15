@@ -19,6 +19,7 @@ import {
   Info,
   ChevronDown,
   Calendar,
+  Check,
 } from 'lucide-react';
 import { ThemeContext } from '../App';
 
@@ -34,6 +35,7 @@ const MachineView: React.FC = () => {
   const [selectedPeriod, setSelectedPeriod] = useState<'today' | 'week' | 'month' | 'year' | 'custom'>('today');
   const [customStartDate, setCustomStartDate] = useState<string>('');
   const [customEndDate, setCustomEndDate] = useState<string>('');
+  const [appliedCustomDates, setAppliedCustomDates] = useState({ start: '', end: '' });
   const [machineStatus, setMachineStatus] = useState<string>('inactive');
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -129,8 +131,8 @@ const MachineView: React.FC = () => {
         };
       case 'custom':
         return {
-          startDate: customStartDate,
-          endDate: customEndDate
+          startDate: appliedCustomDates.start || customStartDate,
+          endDate: appliedCustomDates.end || customEndDate
         };
       default:
         return {
@@ -139,6 +141,25 @@ const MachineView: React.FC = () => {
         };
     }
   };
+
+  const handleApplyCustomDates = () => {
+    if (!customStartDate || !customEndDate) {
+      toast.error('Please select both start and end dates');
+      return;
+    }
+    
+    if (customStartDate > customEndDate) {
+      toast.error('Start date must be before end date');
+      return;
+    }
+    
+    setAppliedCustomDates({ start: customStartDate, end: customEndDate });
+  };
+
+  // Check if custom dates have changed but not applied
+  const hasUnappliedChanges = selectedPeriod === 'custom' && 
+    (customStartDate !== appliedCustomDates.start || customEndDate !== appliedCustomDates.end) &&
+    customStartDate && customEndDate;
 
   useEffect(() => {
     if (id) {
@@ -150,7 +171,7 @@ const MachineView: React.FC = () => {
         socketService.leaveMachine(id);
       }
     };
-  }, [id, selectedPeriod, customStartDate, customEndDate]);
+  }, [id, selectedPeriod, appliedCustomDates]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -637,51 +658,127 @@ const MachineView: React.FC = () => {
       </div>
 
       {/* Time Period Selector */}
-      <div className="flex flex-col md:flex-row md:items-center space-y-2 md:space-y-0 md:space-x-4">
-        <span className={`text-sm ${textSecondaryClass}`}>View Analytics For:</span>
-        <div className="flex flex-wrap gap-2">
-          {[
-            { value: 'today', label: 'Today' },
-            { value: 'week', label: 'This Week' },
-            { value: 'month', label: 'Month to Date' },
-            { value: 'year', label: 'Year to Date' },
-            { value: 'custom', label: 'Custom' }
-          ].map((period) => (
-            <button
-              key={period.value}
-              onClick={() => setSelectedPeriod(period.value as any)}
-              className={`px-3 py-1 text-sm rounded-md transition-colors flex items-center ${
-                selectedPeriod === period.value
-                  ? 'bg-blue-600 text-white'
-                  : `${buttonSecondaryClass}`
-              }`}
-            >
-              {period.value === 'custom' && <Calendar className="h-4 w-4 mr-1" />}
-              {period.label}
-            </button>
-          ))}
+      <div className="space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center space-y-2 md:space-y-0 md:space-x-4">
+          <span className={`text-sm font-medium ${textSecondaryClass}`}>View Analytics For:</span>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { value: 'today', label: 'Today' },
+              { value: 'week', label: 'This Week' },
+              { value: 'month', label: 'Month to Date' },
+              { value: 'year', label: 'Year to Date' },
+              { value: 'custom', label: 'Custom Range' }
+            ].map((period) => (
+              <button
+                key={period.value}
+                onClick={() => setSelectedPeriod(period.value as any)}
+                className={`px-4 py-2 text-sm rounded-lg transition-all duration-200 flex items-center font-medium ${
+                  selectedPeriod === period.value
+                    ? 'bg-blue-600 text-white shadow-md transform scale-105'
+                    : `${buttonSecondaryClass} hover:shadow-sm`
+                }`}
+              >
+                {period.value === 'custom' && <Calendar className="h-4 w-4 mr-2" />}
+                {period.label}
+              </button>
+            ))}
+          </div>
         </div>
         
+        {/* Enhanced Custom Date Picker */}
         {selectedPeriod === 'custom' && (
-          <div className="flex flex-wrap gap-2">
-            <div>
-              <label className={`text-xs ${textSecondaryClass} block mb-1`}>Start Date</label>
-              <input
-                type="date"
-                value={customStartDate}
-                onChange={(e) => setCustomStartDate(e.target.value)}
-                className={`p-2 rounded border ${inputBorderClass} ${inputBgClass}`}
-              />
+          <div className={`rounded-xl p-6 border-2 border-dashed transition-all duration-300 ${
+            isDarkMode 
+              ? 'bg-gray-800/50 border-gray-600 hover:border-gray-500 hover:bg-gray-800/70' 
+              : 'bg-blue-50/50 border-blue-200 hover:border-blue-300 hover:bg-blue-50/70'
+          }`}>
+            <div className="flex items-center space-x-3 mb-4">
+              <Calendar className={`h-5 w-5 ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`} />
+              <h3 className={`text-lg font-semibold ${textClass}`}>Custom Date Range</h3>
             </div>
-            <div>
-              <label className={`text-xs ${textSecondaryClass} block mb-1`}>End Date</label>
-              <input
-                type="date"
-                value={customEndDate}
-                onChange={(e) => setCustomEndDate(e.target.value)}
-                className={`p-2 rounded border ${inputBorderClass} ${inputBgClass}`}
-              />
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+              {/* Start Date */}
+              <div className="space-y-2">
+                <label className={`text-sm font-medium ${textSecondaryClass} block`}>
+                  Start Date
+                </label>
+                <div className="relative">
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                    className={`w-full px-4 py-3 rounded-lg border-2 transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                      isDarkMode
+                        ? 'bg-gray-700 border-gray-600 text-white focus:bg-gray-600'
+                        : 'bg-white border-gray-300 text-gray-900 focus:bg-gray-50'
+                    }`}
+                  />
+                </div>
+              </div>
+              
+              {/* End Date */}
+              <div className="space-y-2">
+                <label className={`text-sm font-medium ${textSecondaryClass} block`}>
+                  End Date
+                </label>
+                <div className="relative">
+                  <input
+                    type="date"
+                    value={customEndDate}
+                    onChange={(e) => setCustomEndDate(e.target.value)}
+                    className={`w-full px-4 py-3 rounded-lg border-2 transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                      isDarkMode
+                        ? 'bg-gray-700 border-gray-600 text-white focus:bg-gray-600'
+                        : 'bg-white border-gray-300 text-gray-900 focus:bg-gray-50'
+                    }`}
+                  />
+                </div>
+              </div>
+              
+              {/* Apply Button */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-transparent block">Apply</label>
+                <button
+                  onClick={handleApplyCustomDates}
+                  disabled={!customStartDate || !customEndDate}
+                  className={`w-full px-6 py-3 rounded-lg font-medium transition-all duration-200 flex items-center justify-center space-x-2 ${
+                    hasUnappliedChanges
+                      ? 'bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white shadow-lg transform hover:scale-105 animate-pulse'
+                      : !customStartDate || !customEndDate
+                      ? isDarkMode
+                        ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                        : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                      : isDarkMode
+                      ? 'bg-green-600 hover:bg-green-700 text-white'
+                      : 'bg-green-600 hover:bg-green-700 text-white'
+                  }`}
+                >
+                  <Check className="h-4 w-4" />
+                  <span>
+                    {hasUnappliedChanges ? 'Apply Changes' : 'Applied'}
+                  </span>
+                </button>
+              </div>
             </div>
+            
+            {/* Date Range Summary */}
+            {customStartDate && customEndDate && (
+              <div className={`mt-4 p-3 rounded-lg ${
+                isDarkMode ? 'bg-gray-700/50' : 'bg-blue-100/50'
+              }`}>
+                <p className={`text-sm ${textSecondaryClass}`}>
+                  Selected range: <span className={`font-medium ${textClass}`}>
+                    {new Date(customStartDate).toLocaleDateString()} - {new Date(customEndDate).toLocaleDateString()}
+                  </span>
+                  {appliedCustomDates.start && appliedCustomDates.end && (
+                    customStartDate === appliedCustomDates.start && customEndDate === appliedCustomDates.end
+                      ? <span className={`ml-2 text-green-600 ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>✓ Applied</span>
+                      : <span className={`ml-2 text-orange-600 ${isDarkMode ? 'text-orange-400' : 'text-orange-600'}`}>⚠ Click Apply to update</span>
+                  )}
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>
