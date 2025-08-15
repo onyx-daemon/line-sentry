@@ -47,24 +47,24 @@ class PinSignalGenerator:
                 if random.random() < 0.5:  # 5% chance to change
                     self.pin_states[i] = random.choice([0, 1])
             # Unit cycle sensors (pins 4-7) - periodic pulses for production
-            else:
-                # Simulate production cycles - more frequent during "working hours"
-                current_hour = datetime.now().hour
+            # else:
+            #     # Simulate production cycles - more frequent during "working hours"
+            #     current_hour = datetime.now().hour
                 
-                # Higher production rate during working hours (8 AM - 6 PM)
-                if 8 <= current_hour <= 18:
-                    cycle_probability = 0.15  # 15% chance for cycle pulse
-                else:
-                    cycle_probability = 0.05  # 5% chance during off hours
+            #     # Higher production rate during working hours (8 AM - 6 PM)
+            #     if 8 <= current_hour <= 18:
+            #         cycle_probability = 0.15  # 15% chance for cycle pulse
+            #     else:
+            #         cycle_probability = 0.05  # 5% chance during off hours
                 
-                if random.random() < cycle_probability:
-                    self.pin_states[i] = 1
-                    self.last_cycle_times[i] = time.time()
-                    logger.info(f"Production cycle detected on pin DQ.{i}")
-                elif i in self.last_cycle_times:
-                    # Reset after short pulse (1-2 seconds)
-                    if time.time() - self.last_cycle_times[i] > random.uniform(1, 2):
-                        self.pin_states[i] = 0
+            #     if random.random() < cycle_probability:
+            #         self.pin_states[i] = 1
+            #         self.last_cycle_times[i] = time.time()
+            #         logger.info(f"Production cycle detected on pin DQ.{i}")
+            #     elif i in self.last_cycle_times:
+            #         # Reset after short pulse (1-2 seconds)
+            #         if time.time() - self.last_cycle_times[i] > random.uniform(1, 2):
+            #             self.pin_states[i] = 0
         
         # Convert pin states to byte
         byte_value = 0

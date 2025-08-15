@@ -690,7 +690,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const [availableOperators, setAvailableOperators] = useState<User[]>([]);
   const [availableMolds, setAvailableMolds] = useState<Mold[]>([]);
-  const [currentTime, setCurrentTime] = useState(new Date());
   const [machineStatus, setMachineStatus] = useState<string>('inactive');
   const [machineColor, setMachineColor] = useState<string>('gray');
   const [shifts, setShifts] = useState<any[]>([]);
@@ -698,27 +697,13 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
   const [isLoading, setIsLoading] = useState(false);
 
   // Theme classes
-  const bgClass = isDarkMode ? 'bg-gray-900' : 'bg-gray-50';
   const cardBgClass = isDarkMode ? 'bg-gray-800' : 'bg-white';
   const cardBorderClass = isDarkMode ? 'border-gray-700' : 'border-gray-200';
   const textClass = isDarkMode ? 'text-white' : 'text-gray-900';
   const textSecondaryClass = isDarkMode ? 'text-gray-400' : 'text-gray-600';
-  const inputBgClass = isDarkMode ? 'bg-gray-700' : 'bg-white';
-  const inputBorderClass = isDarkMode ? 'border-gray-600' : 'border-gray-300';
-  const buttonPrimaryClass = isDarkMode 
-    ? 'bg-blue-600 hover:bg-blue-700' 
-    : 'bg-blue-600 hover:bg-blue-500';
   const buttonSecondaryClass = isDarkMode 
     ? 'border-gray-600 text-gray-300 hover:bg-gray-700' 
     : 'border-gray-300 text-gray-700 hover:bg-gray-100';
-
-  // Helper to format date as YYYY-MM-DD
-  const formatDate = (date: Date) => {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
 
   // Check for unapplied custom date changes
   const hasUnappliedChanges = timeframe === 'custom' && 
@@ -774,15 +759,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
     }
   };
   
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(new Date());
-    }, 60000);
-    
-    return () => clearInterval(timer);
-  }, []);
-
   useEffect(() => {
     fetchProductionData();
   }, [timeframe, machineId, appliedCustomDates]);
