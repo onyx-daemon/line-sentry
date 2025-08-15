@@ -1,7 +1,6 @@
 import { useState, useEffect, useContext } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
 import { ProductionTimelineDay, ProductionHour, StoppageRecord, User, Mold } from '../types';
-import { format, parseISO, isToday, startOfWeek, startOfMonth, endOfWeek, endOfMonth, isSameDay } from 'date-fns';
+import { format, parseISO, isToday} from 'date-fns';
 import socketService from '../services/socket';
 import apiService from '../services/api';
 import { 
@@ -20,14 +19,12 @@ import {
   Zap,
   ZapOff,
   Calendar,
-  CalendarDays
+  Check,
 } from 'lucide-react';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { useAuth } from '../context/AuthContext';
 import { ThemeContext } from '../App';
-import DatePicker from 'react-datepicker';
-import 'react-datepicker/dist/react-datepicker.css';
 
 interface ProductionTimelineProps {
   machineId: string;
@@ -687,8 +684,9 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
   const [data, setData] = useState<ProductionTimelineDay[]>([]);
   const [selectedHour, setSelectedHour] = useState<{ hour: ProductionHour; date: string } | null>(null);
   const [timeframe, setTimeframe] = useState<'today' | 'week' | 'month' | 'custom'>('today');
-  const [customStartDate, setCustomStartDate] = useState<Date>(startOfWeek(new Date()));
-  const [customEndDate, setCustomEndDate] = useState<Date>(new Date());
+  const [customStartDate, setCustomStartDate] = useState<string>('');
+  const [customEndDate, setCustomEndDate] = useState<string>('');
+  const [appliedCustomDates, setAppliedCustomDates] = useState({ start: '', end: '' });
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const [availableOperators, setAvailableOperators] = useState<User[]>([]);
   const [availableMolds, setAvailableMolds] = useState<Mold[]>([]);
@@ -714,14 +712,27 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
     ? 'border-gray-600 text-gray-300 hover:bg-gray-700' 
     : 'border-gray-300 text-gray-700 hover:bg-gray-100';
 
+  // Helper to format date as YYYY-MM-DD
+  const formatDate = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Check for unapplied custom date changes
+  const hasUnappliedChanges = timeframe === 'custom' && 
+    (customStartDate !== appliedCustomDates.start || customEndDate !== appliedCustomDates.end) &&
+    customStartDate && customEndDate;
+
   const fetchProductionData = async () => {
     setIsLoading(true);
     try {
       let params: any = { timeframe };
       
       if (timeframe === 'custom') {
-        params.startDate = format(customStartDate, 'yyyy-MM-dd');
-        params.endDate = format(customEndDate, 'yyyy-MM-dd');
+        params.startDate = appliedCustomDates.start;
+        params.endDate = appliedCustomDates.end;
       }
 
       const response = await apiService.getProductionTimeline(machineId, params);
@@ -762,6 +773,7 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
       return { operators: [], molds: [] };
     }
   };
+  
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -773,7 +785,7 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
 
   useEffect(() => {
     fetchProductionData();
-  }, [timeframe, machineId, customStartDate, customEndDate]);
+  }, [timeframe, machineId, appliedCustomDates]);
 
   useEffect(() => {
     fetchOperatorsAndMolds();
@@ -1047,16 +1059,19 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
     }
   };
 
-  const handleCustomDateApply = () => {
-    if (customStartDate && customEndDate) {
-      if (customStartDate > customEndDate) {
-        toast.error('Start date must be before end date');
-        return;
-      }
-      setTimeframe('custom');
-      setSelectedDayIndex(0);
-      fetchProductionData();
+  const handleApplyCustomDates = () => {
+    if (!customStartDate || !customEndDate) {
+      toast.error('Please select both start and end dates');
+      return;
     }
+    
+    if (customStartDate > customEndDate) {
+      toast.error('Start date must be before end date');
+      return;
+    }
+    
+    setAppliedCustomDates({ start: customStartDate, end: customEndDate });
+    setTimeframe('custom');
   };
 
   const formatTime = (hour: number) => {
@@ -1096,7 +1111,7 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
     <div className="space-y-4">
       <ToastContainer
         position="top-right"
-        autoClose={5000}
+        autoClose= {5000}
         hideProgressBar={false}
         newestOnTop={false}
         closeOnClick
@@ -1107,84 +1122,149 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
         theme={isDarkMode ? "dark" : "light"}
       />
 
-      {/* Timeframe Selector */}
-      <div className="flex items-center justify-between">
-        <div className="flex space-x-1">
-          {[
-            { value: 'today', label: 'Today', icon: Calendar },
-            { value: 'week', label: 'This Week', icon: CalendarDays },
-            { value: 'month', label: 'This Month', icon: CalendarDays },
-            { value: 'custom', label: 'Custom', icon: Calendar }
-          ].map((mode) => (
-            <button
-              key={mode.value}
-              onClick={() => handleTimeframeChange(mode.value as any)}
-              className={`px-3 py-1 text-sm rounded-md transition-colors flex items-center space-x-1 ${
-                timeframe === mode.value
-                  ? 'bg-blue-600 text-white'
-                  : `${buttonSecondaryClass}`
-              }`}
-            >
-              {mode.icon && <mode.icon className="h-4 w-4" />}
-              <span>{mode.label}</span>
-            </button>
-          ))}
+      {/* Timeframe Selector - Enhanced */}
+      <div className="space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center space-y-2 md:space-y-0 md:space-x-4">
+          <span className={`text-sm font-medium ${textSecondaryClass}`}>View Analytics For:</span>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { value: 'today', label: 'Today' },
+              { value: 'week', label: 'This Week' },
+              { value: 'month', label: 'Month to Date' },
+              { value: 'custom', label: 'Custom Range' }
+            ].map((period) => (
+              <button
+                key={period.value}
+                onClick={() => handleTimeframeChange(period.value as any)}
+                className={`px-4 py-2 text-sm rounded-lg transition-all duration-200 flex items-center font-medium ${
+                  timeframe === period.value
+                    ? 'bg-blue-600 text-white shadow-md transform scale-105'
+                    : `${buttonSecondaryClass} hover:shadow-sm`
+                }`}
+              >
+                {period.value === 'custom' && <Calendar className="h-4 w-4 mr-2" />}
+                {period.label}
+              </button>
+            ))}
+          </div>
         </div>
-
-        {/* Custom Date Picker (shown only when custom is selected) */}
+        
+        {/* Enhanced Custom Date Picker */}
         {timeframe === 'custom' && (
-          <div className={`flex items-center space-x-2 px-3 py-1 rounded-md ${isDarkMode ? 'bg-gray-800' : 'bg-gray-100'}`}>
-            <DatePicker
-              selected={customStartDate}
-              onChange={(date: Date | null) => {
-                if (date) setCustomStartDate(date);
-              }}
-              selectsStart
-              startDate={customStartDate}
-              endDate={customEndDate}
-              maxDate={new Date()}
-              className={`text-sm rounded border ${inputBorderClass} ${inputBgClass} px-2 py-1 w-28`}
-            />
-            <DatePicker
-              selected={customEndDate}
-              onChange={(date: Date | null) => {
-                if (date) setCustomEndDate(date);
-              }}
-              selectsEnd
-              startDate={customStartDate}
-              endDate={customEndDate}
-              minDate={customStartDate}
-              maxDate={new Date()}
-              className={`text-sm rounded border ${inputBorderClass} ${inputBgClass} px-2 py-1 w-28`}
-            />
-            <button
-              onClick={handleCustomDateApply}
-              className={`px-2 py-1 text-sm rounded ${buttonPrimaryClass}`}
-            >
-              Apply
-            </button>
+          <div className={`rounded-xl p-6 border-2 border-dashed transition-all duration-300 ${
+            isDarkMode 
+              ? 'bg-gray-800/50 border-gray-600 hover:border-gray-500 hover:bg-gray-800/70' 
+              : 'bg-blue-50/50 border-blue-200 hover:border-blue-300 hover:bg-blue-50/70'
+          }`}>
+            <div className="flex items-center space-x-3 mb-4">
+              <Calendar className={`h-5 w-5 ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`} />
+              <h3 className={`text-lg font-semibold ${textClass}`}>Custom Date Range</h3>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+              {/* Start Date */}
+              <div className="space-y-2">
+                <label className={`text-sm font-medium ${textSecondaryClass} block`}>
+                  Start Date
+                </label>
+                <div className="relative">
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                    className={`w-full px-4 py-3 rounded-lg border-2 transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                      isDarkMode
+                        ? 'bg-gray-700 border-gray-600 text-white focus:bg-gray-600'
+                        : 'bg-white border-gray-300 text-gray-900 focus:bg-gray-50'
+                    }`}
+                  />
+                </div>
+              </div>
+              
+              {/* End Date */}
+              <div className="space-y-2">
+                <label className={`text-sm font-medium ${textSecondaryClass} block`}>
+                  End Date
+                </label>
+                <div className="relative">
+                  <input
+                    type="date"
+                    value={customEndDate}
+                    onChange={(e) => setCustomEndDate(e.target.value)}
+                    className={`w-full px-4 py-3 rounded-lg border-2 transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                      isDarkMode
+                        ? 'bg-gray-700 border-gray-600 text-white focus:bg-gray-600'
+                        : 'bg-white border-gray-300 text-gray-900 focus:bg-gray-50'
+                    }`}
+                  />
+                </div>
+              </div>
+              
+              {/* Apply Button */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-transparent block">Apply</label>
+                <button
+                  onClick={handleApplyCustomDates}
+                  disabled={!customStartDate || !customEndDate}
+                  className={`w-full px-6 py-3 rounded-lg font-medium transition-all duration-200 flex items-center justify-center space-x-2 ${
+                    hasUnappliedChanges
+                      ? 'bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white shadow-lg transform hover:scale-105 animate-pulse'
+                      : !customStartDate || !customEndDate
+                      ? isDarkMode
+                        ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                        : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                      : isDarkMode
+                      ? 'bg-green-600 hover:bg-green-700 text-white'
+                      : 'bg-green-600 hover:bg-green-700 text-white'
+                  }`}
+                >
+                  <Check className="h-4 w-4" />
+                  <span>
+                    {hasUnappliedChanges ? 'Apply Changes' : 'Applied'}
+                  </span>
+                </button>
+              </div>
+            </div>
+            
+            {/* Date Range Summary */}
+            {customStartDate && customEndDate && (
+              <div className={`mt-4 p-3 rounded-lg ${
+                isDarkMode ? 'bg-gray-700/50' : 'bg-blue-100/50'
+              }`}>
+                <p className={`text-sm ${textSecondaryClass}`}>
+                  Selected range: <span className={`font-medium ${textClass}`}>
+                    {new Date(customStartDate).toLocaleDateString()} - {new Date(customEndDate).toLocaleDateString()}
+                  </span>
+                  {appliedCustomDates.start && appliedCustomDates.end && (
+                    customStartDate === appliedCustomDates.start && customEndDate === appliedCustomDates.end
+                      ? <span className={`ml-2 text-green-600 ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>✓ Applied</span>
+                      : <span className={`ml-2 text-orange-600 ${isDarkMode ? 'text-orange-400' : 'text-orange-600'}`}>⚠ Click Apply to update</span>
+                  )}
+                </p>
+              </div>
+            )}
           </div>
         )}
+      </div>
 
-        {/* Machine Status Indicator */}
-        <div className={`flex items-center px-3 py-1 rounded-md ${
-          machineColor === 'green'
-            ? isDarkMode ? 'bg-green-900/30 text-green-400' : 'bg-green-100 text-green-800' 
-            : machineColor === 'red'
-            ? isDarkMode ? 'bg-red-900/30 text-red-400' : 'bg-red-100 text-red-800'
-            : machineColor === 'orange'
-            ? isDarkMode ? 'bg-orange-900/30 text-orange-400' : 'bg-orange-100 text-orange-800'
-            : isDarkMode ? 'bg-gray-900/30 text-gray-400' : 'bg-gray-100 text-gray-800'
-        }`}>
-          {machineColor === 'green' ? (
-            <Zap className="h-4 w-4 mr-1" />
-          ) : (
-            <ZapOff className="h-4 w-4 mr-1" />
-          )}
-          <span className="text-sm">
-            {machineStatus.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
-          </span>
-        </div>
+      {/* Machine Status */}
+      <div className={`flex items-center px-3 py-1 rounded-md ${
+        machineColor === 'green'
+          ? isDarkMode ? 'bg-green-900/30 text-green-400' : 'bg-green-100 text-green-800' 
+          : machineColor === 'red'
+          ? isDarkMode ? 'bg-red-900/30 text-red-400' : 'bg-red-100 text-red-800'
+          : machineColor === 'orange'
+          ? isDarkMode ? 'bg-orange-900/30 text-orange-400' : 'bg-orange-100 text-orange-800'
+          : isDarkMode ? 'bg-gray-900/30 text-gray-400' : 'bg-gray-100 text-gray-800'
+      }`}>
+        {machineColor === 'green' ? (
+          <Zap className="h-4 w-4 mr-1" />
+        ) : (
+          <ZapOff className="h-4 w-4 mr-1" />
+        )}
+        <span className="text-sm">
+          {machineStatus.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
+        </span>
       </div>
 
       {/* Day Navigation */}

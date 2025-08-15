@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useContext } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Machine, ProductionTimelineDay, MachineStats, MachineStatus } from '../types';
+import { Machine, MachineStats, MachineStatus } from '../types';
 import apiService from '../services/api';
 import socketService from '../services/socket';
 import ProductionTimeline from './ProductionTimeline';
@@ -17,7 +17,6 @@ import {
   ZapOff,
   Edit,
   Info,
-  ChevronDown,
   Calendar,
   Check,
 } from 'lucide-react';
@@ -28,7 +27,6 @@ const MachineView: React.FC = () => {
   const navigate = useNavigate();
   const { isDarkMode } = useContext(ThemeContext);
   const [machine, setMachine] = useState<Machine | null>(null);
-  const [timeline, setTimeline] = useState<ProductionTimelineDay[]>([]);
   const [stats, setStats] = useState<MachineStats | null>(null);
   const [ytdStats, setYtdStats] = useState<MachineStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -42,9 +40,6 @@ const MachineView: React.FC = () => {
     name: '',
     description: ''
   });
-  const [warnings, setWarnings] = useState<string[]>([]);
-  const [currentLocalTime, setCurrentLocalTime] = useState(new Date());
-  const [showWarnings, setShowWarnings] = useState(false);
   const [tooltip, setTooltip] = useState<{
     content: string;
     x: number;
@@ -91,43 +86,35 @@ const MachineView: React.FC = () => {
     }
   };
 
-  // Helper function to format date as YYYY-MM-DD in local time
-  const formatLocalDate = (date: Date) => {
-    // Convert to Pakistan time
-    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
-    const pakistanDate = new Date(date.getTime() + PAKISTAN_OFFSET);
-    const year = pakistanDate.getUTCFullYear();
-    const month = String(pakistanDate.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(pakistanDate.getUTCDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+  // Helper function to format date
+  const formatUTCDate = (date: Date) => {
+    return format(date, 'yyyy-MM-dd');
   };
 
-  // Calculate date range based on selected period (local time)
+  // Adjust getDateRange to use UTC-based calculations
   const getDateRange = () => {
-    // Use Pakistan time for date calculations
-    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
-    const pakistanNow = new Date(Date.now() + PAKISTAN_OFFSET);
+    const now = new Date();
     
     switch (selectedPeriod) {
       case 'today':
         return {
-          startDate: formatLocalDate(startOfDay(pakistanNow)),
-          endDate: formatLocalDate(pakistanNow)
+          startDate: formatUTCDate(startOfDay(now)),
+          endDate: formatUTCDate(now)
         };
       case 'week':
         return {
-          startDate: formatLocalDate(startOfWeek(pakistanNow)),
-          endDate: formatLocalDate(pakistanNow)
+          startDate: formatUTCDate(startOfWeek(now)),
+          endDate: formatUTCDate(now)
         };
       case 'month':
         return {
-          startDate: formatLocalDate(startOfMonth(pakistanNow)),
-          endDate: formatLocalDate(pakistanNow)
+          startDate: formatUTCDate(startOfMonth(now)),
+          endDate: formatUTCDate(now)
         };
       case 'year':
         return {
-          startDate: formatLocalDate(startOfYear(pakistanNow)),
-          endDate: formatLocalDate(pakistanNow)
+          startDate: formatUTCDate(startOfYear(now)),
+          endDate: formatUTCDate(now)
         };
       case 'custom':
         return {
@@ -136,11 +123,12 @@ const MachineView: React.FC = () => {
         };
       default:
         return {
-          startDate: formatLocalDate(startOfDay(pakistanNow)),
-          endDate: formatLocalDate(pakistanNow)
+          startDate: formatUTCDate(startOfDay(now)),
+          endDate: formatUTCDate(now)
         };
     }
   };
+
 
   const handleApplyCustomDates = () => {
     if (!customStartDate || !customEndDate) {
@@ -173,73 +161,22 @@ const MachineView: React.FC = () => {
     };
   }, [id, selectedPeriod, appliedCustomDates]);
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentLocalTime(new Date());
-    }, 60000);
-    
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!timeline.length) return;
-    
-    const newWarnings: string[] = [];
-    
-    // Convert to Pakistan time for comparison
-    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
-    const pakistanTime = new Date(currentLocalTime.getTime() + PAKISTAN_OFFSET);
-    const currentPakistanHour = pakistanTime.getHours();
-    const today = formatPakistanDate(pakistanTime);
-    
-    // Find today's data in timeline
-    const todayData = timeline.find(day => day.date === today);
-    
-    if (todayData) {
-      todayData.hours.forEach(hour => {
-        // Only check hours that have passed
-        if (hour.hour > currentPakistanHour) return;
-        
-        if (!hour.operator) {
-          newWarnings.push(`Operator not assigned for ${hour.hour}:00`);
-        }
-        if (!hour.mold) {
-          newWarnings.push(`Mold not assigned for ${hour.hour}:00`);
+   const fetchYtdStats = async () => {
+    try {
+      const now = new Date();
+      const ytdStart = formatUTCDate(startOfYear(now));
+      const response = await apiService.request(`/analytics/machine-stats/${id}`, {
+        method: 'GET',
+        params: {
+          startDate: ytdStart,
+          endDate: formatUTCDate(now)
         }
       });
+      setYtdStats(response);
+    } catch (err) {
+      console.error('Failed to fetch YTD stats:', err);
     }
-    
-    setWarnings(newWarnings);
-  }, [timeline, currentLocalTime]);
-
-  // Helper function to format date as YYYY-MM-DD in Pakistan time
-  const formatPakistanDate = (date: Date) => {
-    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
-    const pakistanDate = new Date(date.getTime() + PAKISTAN_OFFSET);
-    const year = pakistanDate.getUTCFullYear();
-    const month = String(pakistanDate.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(pakistanDate.getUTCDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
   };
-
-  const fetchYtdStats = async () => {
-      try {
-        // Use Pakistan time for YTD calculation
-        const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
-        const pakistanNow = new Date(Date.now() + PAKISTAN_OFFSET);
-        const ytdStart = formatLocalDate(startOfYear(pakistanNow));
-        const response = await apiService.request(`/analytics/machine-stats/${id}`, {
-          method: 'GET',
-          params: {
-            startDate: ytdStart,
-            endDate: formatLocalDate(pakistanNow)
-          }
-        });
-        setYtdStats(response);
-      } catch (err) {
-        console.error('Failed to fetch YTD stats:', err);
-      }
-    };
 
   // Fetch year-to-date stats on component mount
   useEffect(() => {
@@ -262,29 +199,8 @@ const MachineView: React.FC = () => {
 
     const handleAssignmentUpdated = (update: any) => {
       if (update.machineId === id) {
-        setTimeline(prev => {
-          if (!Array.isArray(prev)) return prev;
-
-          return prev.map(day => {
-            if (day.date !== update.date) return day;
-            return {
-              ...day,
-              hours: day.hours.map(hour => {
-                if (!update.hours.includes(hour.hour)) return hour;
-                return {
-                  ...hour,
-                  operator: update.operatorId ?? undefined,
-                  mold: update.moldId ?? undefined
-                };
-              })
-            };
-          })});
-        
         fetchStats();
         fetchYtdStats();
-        setWarnings(prev => prev.filter(w => 
-          !update.hours.includes(parseInt(w.split(' ')[4]))
-        ));
       }
     };
 
@@ -334,10 +250,7 @@ const MachineView: React.FC = () => {
   const fetchMachineData = async () => {
     try {
       setLoading(true);
-      const [machineData, timelineData] = await Promise.all([
-        apiService.getMachine(id!),
-        apiService.getProductionTimeline(id!),
-      ]);
+      const machineData = await apiService.getMachine(id!);
       
       setMachine(machineData);
       setEditForm({
@@ -345,17 +258,15 @@ const MachineView: React.FC = () => {
         description: machineData.description || ''
       });
 
-      setTimeline(Array.isArray(timelineData) ? timelineData : []);
       
       // Fetch stats for selected period
       const { startDate, endDate } = getDateRange();
-      const statsData = await apiService.request(`/analytics/machine-stats/${id}`, {
-        method: 'GET',
-        params: {
-          startDate,
-          endDate
-        }
-      });
+      const [statsData] = await Promise.all([
+        apiService.request(`/analytics/machine-stats/${id}`, {
+          method: 'GET',
+          params: { startDate, endDate }
+        })
+      ]);
       
       setStats(statsData);
     } catch (err) {
@@ -565,40 +476,6 @@ const MachineView: React.FC = () => {
           )}
         </div>
       </div>
-
-      {/* Mold, Operator Assignment Warning - COLLAPSIBLE */}
-      {warnings.length > 0 && (
-        <div 
-          className={`rounded-lg p-4 mb-6 cursor-pointer ${
-            isDarkMode 
-              ? 'bg-yellow-900/30 border border-yellow-500 hover:bg-yellow-900/40' 
-              : 'bg-yellow-100 border border-yellow-300 hover:bg-yellow-200'
-          } transition-colors`}
-          onClick={() => setShowWarnings(!showWarnings)}
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <AlertTriangle className={`h-5 w-5 ${isDarkMode ? 'text-yellow-400' : 'text-yellow-600'}`} />
-              <h3 className={`${isDarkMode ? 'text-yellow-400' : 'text-yellow-600'} font-medium`}>
-                Assignment Warnings ({warnings.length})
-              </h3>
-            </div>
-            <ChevronDown 
-              className={`h-5 w-5 transform transition-transform ${
-                showWarnings ? 'rotate-180' : ''
-              } ${isDarkMode ? 'text-yellow-400' : 'text-yellow-600'}`} 
-            />
-          </div>
-          
-          {showWarnings && (
-            <ul className={`list-disc pl-5 mt-3 ${isDarkMode ? 'text-yellow-300' : 'text-yellow-700'}`}>
-              {warnings.map((warning, index) => (
-                <li key={index}>{warning}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
 
       {/* Key Metrics - Year to Date */}
       <div className="grid grid-cols-3 gap-2">
@@ -952,7 +829,7 @@ const MachineView: React.FC = () => {
             </div>
             <div 
               className="flex justify-between items-center relative"
-              onMouseEnter={handleMouseEnter('Mean Time Between Failures (average time between breakdowns)')}
+              onMouseEnter={handleMouseEnter('Mean Time Between Failures in days (Year to Date)')}
               onMouseLeave={handleMouseLeave}
               onMouseMove={handleMouseMove}
             >
@@ -965,7 +842,7 @@ const MachineView: React.FC = () => {
             </div>
             <div 
               className="flex justify-between items-center relative"
-              onMouseEnter={handleMouseEnter('Mean Time To Repair (average time to repair a breakdown)')}
+              onMouseEnter={handleMouseEnter('Mean Time To Repair in minutes (Year to Date)')}
               onMouseLeave={handleMouseLeave}
               onMouseMove={handleMouseMove}
             >
