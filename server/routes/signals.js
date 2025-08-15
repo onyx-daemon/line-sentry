@@ -256,22 +256,35 @@ async function updateMachineStates(pinMappings, currentTime, io, timeouts) {
 
 async function updateRunningMinutes(machineId, currentTime, io) {
   try {
-    const currentHour = currentTime.getHours();
-    const currentDate = currentTime.toISOString().split('T')[0];
+    // Convert to Pakistan time for hour calculation
+    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+    const pakistanTime = new Date(currentTime.getTime() + PAKISTAN_OFFSET);
+    const currentHour = pakistanTime.getHours();
+    const currentDate = pakistanTime.toISOString().split('T')[0];
+    
+    // Get Pakistan day range for database query
+    const dayStart = new Date(pakistanTime);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(pakistanTime);
+    dayEnd.setHours(23, 59, 59, 999);
+    
+    // Convert back to UTC for database storage
+    const utcDayStart = new Date(dayStart.getTime() - PAKISTAN_OFFSET);
+    const utcDayEnd = new Date(dayEnd.getTime() - PAKISTAN_OFFSET);
     
     // Find or create production record for today
     let productionRecord = await ProductionRecord.findOne({
       machineId,
       startTime: {
-        $gte: new Date(currentDate + 'T00:00:00.000Z'),
-        $lt: new Date(currentDate + 'T23:59:59.999Z')
+        $gte: utcDayStart,
+        $lt: utcDayEnd
       }
     });
 
     if (!productionRecord) {
       productionRecord = new ProductionRecord({
         machineId,
-        startTime: new Date(currentDate + 'T00:00:00.000Z'),
+        startTime: utcDayStart,
         hourlyData: []
       });
     }
@@ -313,22 +326,35 @@ async function updateRunningMinutes(machineId, currentTime, io) {
 
 async function createPendingStoppage(machineId, currentTime, io) {
   try {
-    const currentHour = currentTime.getHours();
-    const currentDate = currentTime.toISOString().split('T')[0];
+    // Convert to Pakistan time
+    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+    const pakistanTime = new Date(currentTime.getTime() + PAKISTAN_OFFSET);
+    const currentHour = pakistanTime.getHours();
+    const currentDate = pakistanTime.toISOString().split('T')[0];
+    
+    // Get Pakistan day range for database query
+    const dayStart = new Date(pakistanTime);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(pakistanTime);
+    dayEnd.setHours(23, 59, 59, 999);
+    
+    // Convert back to UTC for database storage
+    const utcDayStart = new Date(dayStart.getTime() - PAKISTAN_OFFSET);
+    const utcDayEnd = new Date(dayEnd.getTime() - PAKISTAN_OFFSET);
     
     // Find production record
     let productionRecord = await ProductionRecord.findOne({
       machineId,
       startTime: {
-        $gte: new Date(currentDate + 'T00:00:00.000Z'),
-        $lt: new Date(currentDate + 'T23:59:59.999Z')
+        $gte: utcDayStart,
+        $lt: utcDayEnd
       }
     });
 
     if (!productionRecord) {
       productionRecord = new ProductionRecord({
         machineId,
-        startTime: new Date(currentDate + 'T00:00:00.000Z'),
+        startTime: utcDayStart,
         hourlyData: []
       });
     }
@@ -397,15 +423,28 @@ async function createPendingStoppage(machineId, currentTime, io) {
 
 async function resolvePendingStoppage(machineId, currentTime, io) {
   try {
-    const currentHour = currentTime.getHours();
-    const currentDate = currentTime.toISOString().split('T')[0];
+    // Convert to Pakistan time
+    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+    const pakistanTime = new Date(currentTime.getTime() + PAKISTAN_OFFSET);
+    const currentHour = pakistanTime.getHours();
+    const currentDate = pakistanTime.toISOString().split('T')[0];
+    
+    // Get Pakistan day range for database query
+    const dayStart = new Date(pakistanTime);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(pakistanTime);
+    dayEnd.setHours(23, 59, 59, 999);
+    
+    // Convert back to UTC for database storage
+    const utcDayStart = new Date(dayStart.getTime() - PAKISTAN_OFFSET);
+    const utcDayEnd = new Date(dayEnd.getTime() - PAKISTAN_OFFSET);
     
     // Find production record
     const productionRecord = await ProductionRecord.findOne({
       machineId,
       startTime: {
-        $gte: new Date(currentDate + 'T00:00:00.000Z'),
-        $lt: new Date(currentDate + 'T23:59:59.999Z')
+        $gte: utcDayStart,
+        $lt: utcDayEnd
       }
     });
 
@@ -521,22 +560,35 @@ router.get('/unclassified-stoppages-count', async (req, res) => {
 
 async function updateProductionRecord(machineId, currentTime, io) {
   try {
-    const currentHour = currentTime.getHours();
-    const currentDate = currentTime.toISOString().split('T')[0];
+    // Convert to Pakistan time
+    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+    const pakistanTime = new Date(currentTime.getTime() + PAKISTAN_OFFSET);
+    const currentHour = pakistanTime.getHours();
+    const currentDate = pakistanTime.toISOString().split('T')[0];
+    
+    // Get Pakistan day range for database query
+    const dayStart = new Date(pakistanTime);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(pakistanTime);
+    dayEnd.setHours(23, 59, 59, 999);
+    
+    // Convert back to UTC for database storage
+    const utcDayStart = new Date(dayStart.getTime() - PAKISTAN_OFFSET);
+    const utcDayEnd = new Date(dayEnd.getTime() - PAKISTAN_OFFSET);
     
     // Find or create production record for today
     let productionRecord = await ProductionRecord.findOne({
       machineId,
       startTime: {
-        $gte: new Date(currentDate + 'T00:00:00.000Z'),
-        $lt: new Date(currentDate + 'T23:59:59.999Z')
+        $gte: utcDayStart,
+        $lt: utcDayEnd
       }
     });
 
     if (!productionRecord) {
       productionRecord = new ProductionRecord({
         machineId,
-        startTime: new Date(currentDate + 'T00:00:00.000Z'),
+        startTime: utcDayStart,
         hourlyData: []
       });
     }

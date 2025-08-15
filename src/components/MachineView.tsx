@@ -91,36 +91,41 @@ const MachineView: React.FC = () => {
 
   // Helper function to format date as YYYY-MM-DD in local time
   const formatLocalDate = (date: Date) => {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
+    // Convert to Pakistan time
+    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+    const pakistanDate = new Date(date.getTime() + PAKISTAN_OFFSET);
+    const year = pakistanDate.getUTCFullYear();
+    const month = String(pakistanDate.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(pakistanDate.getUTCDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   };
 
   // Calculate date range based on selected period (local time)
   const getDateRange = () => {
-    const now = new Date();
+    // Use Pakistan time for date calculations
+    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+    const pakistanNow = new Date(Date.now() + PAKISTAN_OFFSET);
     
     switch (selectedPeriod) {
       case 'today':
         return {
-          startDate: formatLocalDate(startOfDay(now)),
-          endDate: formatLocalDate(now)
+          startDate: formatLocalDate(startOfDay(pakistanNow)),
+          endDate: formatLocalDate(pakistanNow)
         };
       case 'week':
         return {
-          startDate: formatLocalDate(startOfWeek(now)),
-          endDate: formatLocalDate(now)
+          startDate: formatLocalDate(startOfWeek(pakistanNow)),
+          endDate: formatLocalDate(pakistanNow)
         };
       case 'month':
         return {
-          startDate: formatLocalDate(startOfMonth(now)),
-          endDate: formatLocalDate(now)
+          startDate: formatLocalDate(startOfMonth(pakistanNow)),
+          endDate: formatLocalDate(pakistanNow)
         };
       case 'year':
         return {
-          startDate: formatLocalDate(startOfYear(now)),
-          endDate: formatLocalDate(now)
+          startDate: formatLocalDate(startOfYear(pakistanNow)),
+          endDate: formatLocalDate(pakistanNow)
         };
       case 'custom':
         return {
@@ -129,8 +134,8 @@ const MachineView: React.FC = () => {
         };
       default:
         return {
-          startDate: formatLocalDate(startOfDay(now)),
-          endDate: formatLocalDate(now)
+          startDate: formatLocalDate(startOfDay(pakistanNow)),
+          endDate: formatLocalDate(pakistanNow)
         };
     }
   };
@@ -159,8 +164,12 @@ const MachineView: React.FC = () => {
     if (!timeline.length) return;
     
     const newWarnings: string[] = [];
-    const currentLocalHour = currentLocalTime.getHours();
-    const today = formatLocalDate(currentLocalTime);
+    
+    // Convert to Pakistan time for comparison
+    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+    const pakistanTime = new Date(currentLocalTime.getTime() + PAKISTAN_OFFSET);
+    const currentPakistanHour = pakistanTime.getHours();
+    const today = formatPakistanDate(pakistanTime);
     
     // Find today's data in timeline
     const todayData = timeline.find(day => day.date === today);
@@ -168,7 +177,7 @@ const MachineView: React.FC = () => {
     if (todayData) {
       todayData.hours.forEach(hour => {
         // Only check hours that have passed
-        if (hour.hour > currentLocalHour) return;
+        if (hour.hour > currentPakistanHour) return;
         
         if (!hour.operator) {
           newWarnings.push(`Operator not assigned for ${hour.hour}:00`);
@@ -182,15 +191,27 @@ const MachineView: React.FC = () => {
     setWarnings(newWarnings);
   }, [timeline, currentLocalTime]);
 
+  // Helper function to format date as YYYY-MM-DD in Pakistan time
+  const formatPakistanDate = (date: Date) => {
+    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+    const pakistanDate = new Date(date.getTime() + PAKISTAN_OFFSET);
+    const year = pakistanDate.getUTCFullYear();
+    const month = String(pakistanDate.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(pakistanDate.getUTCDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   const fetchYtdStats = async () => {
       try {
-        const now = new Date();
-        const ytdStart = formatLocalDate(startOfYear(now));
+        // Use Pakistan time for YTD calculation
+        const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+        const pakistanNow = new Date(Date.now() + PAKISTAN_OFFSET);
+        const ytdStart = formatLocalDate(startOfYear(pakistanNow));
         const response = await apiService.request(`/analytics/machine-stats/${id}`, {
           method: 'GET',
           params: {
             startDate: ytdStart,
-            endDate: formatLocalDate(now)
+            endDate: formatLocalDate(pakistanNow)
           }
         });
         setYtdStats(response);
