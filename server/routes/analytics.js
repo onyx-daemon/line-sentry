@@ -19,92 +19,75 @@ const PERIODS = {
 function getDateRange(timeframe) {
   const now = new Date();
   
-  // Pakistan timezone offset (UTC+5)
-  const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
-  const pakistanNow = new Date(now.getTime() + PAKISTAN_OFFSET);
-  const startDate = new Date(pakistanNow);
+  const startDate = new Date(now);
   
   switch(timeframe) {
     case 'today':
-      startDate.setHours(0, 0, 0, 0);
+      startDate.setUTCHours(0, 0, 0, 0);
       return { 
-        startDate: new Date(startDate.getTime() - PAKISTAN_OFFSET), // Convert back to UTC for DB query
-        endDate: new Date(pakistanNow.getTime() - PAKISTAN_OFFSET)
+        startDate,
+        endDate: new Date(now)
       };
     case 'week':
       // Get start of week (Sunday)
-      startDate.setDate(startDate.getDate() - startDate.getDay());
-      startDate.setHours(0, 0, 0, 0);
+      startDate.setUTCDate(startDate.getUTCDate() - startDate.getUTCDay());
+      startDate.setUTCHours(0, 0, 0, 0);
       return { 
-        startDate: new Date(startDate.getTime() - PAKISTAN_OFFSET),
-        endDate: new Date(pakistanNow.getTime() - PAKISTAN_OFFSET)
+        startDate,
+        endDate: new Date(now)
       };
     case 'month':
-      startDate.setDate(1);
-      startDate.setHours(0, 0, 0, 0);
+      startDate.setUTCDate(1);
+      startDate.setUTCHours(0, 0, 0, 0);
       return { 
-        startDate: new Date(startDate.getTime() - PAKISTAN_OFFSET),
-        endDate: new Date(pakistanNow.getTime() - PAKISTAN_OFFSET)
+        startDate,
+        endDate: new Date(now)
       };
     case 'custom':
       // For custom, we'll expect explicit start/end dates
       return null;
     default:
       // Default to last 7 days
-      startDate.setDate(startDate.getDate() - 7);
+      startDate.setUTCDate(startDate.getUTCDate() - 7);
       return { 
-        startDate: new Date(startDate.getTime() - PAKISTAN_OFFSET),
-        endDate: new Date(pakistanNow.getTime() - PAKISTAN_OFFSET)
+        startDate,
+        endDate: new Date(now)
       };
   }
 }
 
-// Helper function to format date as YYYY-MM-DD in Pakistan time
-function formatPakistanDate(date) {
-  const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
-  const pakistanDate = new Date(date.getTime() + PAKISTAN_OFFSET);
-  return pakistanDate.toISOString().split('T')[0];
+// Helper function to format date as YYYY-MM-DD
+function formatDate(date) {
+  return date.toISOString().split('T')[0];
 }
 
-// Helper function to get start and end of day in Pakistan time
-function getPakistanDayRange(date) {
-  const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+// Helper function to get start and end of day
+function getDayRange(date) {
+  const start = new Date(date);
+  start.setUTCHours(0, 0, 0, 0);
   
-  // Parse the date string and create Pakistan time
-  const inputDate = new Date(date);
-  const pakistanDate = new Date(inputDate.getTime() + PAKISTAN_OFFSET);
+  const end = new Date(start);
+  end.setUTCDate(start.getUTCDate() + 1);
   
-  const start = new Date(pakistanDate);
-  start.setHours(0, 0, 0, 0);
-  
-  const end = new Date(pakistanDate);
-  end.setHours(23, 59, 59, 999);
-  
-  // Convert back to UTC for database queries
-  return { 
-    start: new Date(start.getTime() - PAKISTAN_OFFSET), 
-    end: new Date(end.getTime() - PAKISTAN_OFFSET) 
-  };
+  return { start, end };
 }
-
-
 
 // Machine stats calculation with custom timeframe
 async function calculateMachineStats(machineId, startDate, endDate) {
-  // Convert dates to local time start/end of day
+  // Convert dates to UTC start/end of day
   const localStart = new Date(startDate);
-  localStart.setHours(0, 0, 0, 0);
+  localStart.setUTCHours(0, 0, 0, 0);
   
   const localEnd = new Date(endDate);
-  localEnd.setHours(23, 59, 59, 999);
+  localEnd.setUTCHours(23, 59, 59, 999);
   
   const aggregation = await ProductionRecord.aggregate([
     {
       $match: {
         machineId: new mongoose.Types.ObjectId(machineId),
         startTime: { 
-          $gte: new Date(localStart.getTime() + (localStart.getTimezoneOffset() * 60000)),
-          $lte: new Date(localEnd.getTime() + (localEnd.getTimezoneOffset() * 60000))
+          $gte: localStart,
+          $lte: localEnd
         }
       }
     },
@@ -247,16 +230,8 @@ router.get('/production-timeline/:machineId', auth, async (req, res) => {
     // Determine date range based on timeframe
     let startDate, endDate;
     if (timeframe === 'custom' && startDateParam && endDateParam) {
-      // For custom dates, we need to adjust to local time
-      const start = new Date(startDateParam);
-      const end = new Date(endDateParam);
-      
-      // Adjust to local timezone
-      const startOffset = start.getTimezoneOffset() * 60000;
-      const endOffset = end.getTimezoneOffset() * 60000;
-      
-      startDate = new Date(start.getTime() + startOffset);
-      endDate = new Date(end.getTime() + endOffset);
+      startDate = new Date(startDateParam);
+      endDate = new Date(endDateParam);
     } else {
       const range = getDateRange(timeframe);
       if (!range) {
@@ -289,12 +264,8 @@ router.get('/production-timeline/:machineId', auth, async (req, res) => {
 
     // Generate all dates in the range for the timeline
     const allDates = [];
-    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
-    const pakistanStart = new Date(startDate.getTime() + PAKISTAN_OFFSET);
-    const pakistanEnd = new Date(endDate.getTime() + PAKISTAN_OFFSET);
-    
-    for (let d = new Date(pakistanStart); d <= pakistanEnd; d.setDate(d.getDate() + 1)) {
-      allDates.push(new Date(d.getTime() - PAKISTAN_OFFSET)); // Convert back to UTC for processing
+    for (let d = new Date(startDate); d <= endDate; d.setUTCDate(d.getUTCDate() + 1)) {
+      allDates.push(new Date(d));
     }
 
     // Use aggregation pipeline for better performance
@@ -385,18 +356,17 @@ router.get('/production-timeline/:machineId', auth, async (req, res) => {
 
     // Generate timeline data for all dates in the range
     const timeline = allDates.map(date => {
-      const { start: dayStart, end: dayEnd } = getPakistanDayRange(date);
+      const { start: dayStart, end: dayEnd } = getDayRange(date);
 
       const dayData = {
-        date: formatPakistanDate(date),
+        date: formatDate(date),
         hours: []
       };
 
       // Find production record for this day
       const dayRecord = productionRecords.find(record => {
-        const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
-        const recordPakistanDate = new Date(record.startTime.getTime() + PAKISTAN_OFFSET);
-        return formatPakistanDate(recordPakistanDate) === dayData.date;
+        const recordDate = new Date(record.startTime);
+        return formatDate(recordDate) === dayData.date;
       });
 
       for (let hour = 0; hour < 24; hour++) {
@@ -433,14 +403,13 @@ router.get('/production-timeline/:machineId', auth, async (req, res) => {
     res.json({
       timeline,
       timeframe,
-      startDate: formatPakistanDate(startDate),
-      endDate: formatPakistanDate(endDate)
+      startDate: formatDate(startDate),
+      endDate: formatDate(endDate)
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
-
 
 // Add stoppage record
 router.post('/stoppage', auth, async (req, res) => {
@@ -458,8 +427,9 @@ router.post('/stoppage', auth, async (req, res) => {
       }
     }
 
-    // Date range for query (local time)
-    const { start: dayStart, end: dayEnd } = getPakistanDayRange(new Date(date));
+    // Date range for query
+    const dayStart = new Date(`${date}T00:00:00.000Z`);
+    const dayEnd = new Date(`${date}T23:59:59.999Z`);
     
     // Find or create record efficiently
     let productionRecord = await ProductionRecord.findOneAndUpdate(
@@ -509,8 +479,7 @@ router.post('/stoppage', auth, async (req, res) => {
     } 
     // Add new stoppage
     else {
-      const stoppageStart = new Date(date);
-      stoppageStart.setHours(hour, 0, 0, 0);
+      const stoppageStart = new Date(`${date}T${hour.toString().padStart(2, '0')}:00:00Z`);
       const stoppageEnd = new Date(stoppageStart.getTime() + duration * 60000);
       
       hourData.stoppages.push({
@@ -583,19 +552,19 @@ router.post('/production-assignment', auth, async (req, res) => {
       }
     }
     
-    // Get local date range
-    const { start: dayStart, end: dayEnd } = getPakistanDayRange(new Date(date));
-
     // Find production record
     let productionRecord = await ProductionRecord.findOne({
       machineId,
-      startTime: { $gte: dayStart, $lt: dayEnd }
+      startTime: {
+        $gte: new Date(date + 'T00:00:00.000Z'),
+        $lt: new Date(date + 'T23:59:59.999Z')
+      }
     });
 
     if (!productionRecord) {
       productionRecord = new ProductionRecord({
         machineId,
-        startTime: dayStart,
+        startTime: new Date(date + 'T00:00:00.000Z'),
         hourlyData: []
       });
     }
@@ -794,10 +763,10 @@ router.get('/department-stats/:departmentId', auth, async (req, res) => {
       '_id'
     ).lean();
 
-    // Get date range for last 24 hours in local time
+    // Get date range for last 24 hours
     const endDate = new Date();
     const startDate = new Date(endDate);
-    startDate.setDate(startDate.getDate() - 1);
+    startDate.setUTCDate(startDate.getUTCDate() - 1);
 
     // Parallel stats calculation
     const statsPromises = machines.map(machine => 
@@ -824,10 +793,10 @@ router.get('/factory-stats', auth, async (req, res) => {
     const machines = await Machine.find({ isActive: true }).lean();
     const machineIds = machines.map(m => m._id);
 
-    // Get date range for last 24 hours in local time
+    // Get date range for last 24 hours
     const endDate = new Date();
     const startDate = new Date(endDate);
-    startDate.setDate(startDate.getDate() - 1);
+    startDate.setUTCDate(startDate.getUTCDate() - 1);
 
     // Get stats for all machines in parallel
     const statsPromises = machineIds.map(machineId => 

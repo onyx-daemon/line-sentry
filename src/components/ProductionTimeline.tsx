@@ -1,72 +1,703 @@
-import React, { useState, useEffect, useContext } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { ProductionTimelineDay, User, Mold, StoppageRecord } from '../types';
-import apiService from '../services/api';
+import { useState, useEffect, useContext } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { ProductionTimelineDay, ProductionHour, StoppageRecord, User, Mold } from '../types';
+import { format, parseISO, isToday, startOfWeek, startOfMonth, endOfWeek, endOfMonth, isSameDay } from 'date-fns';
 import socketService from '../services/socket';
-import { ThemeContext } from '../App';
-import {
-  Clock,
-  User as UserIcon,
-  Package,
-  AlertTriangle,
-  Play,
-  Pause,
-  Activity,
-  Edit,
-  Save,
-  X,
+import apiService from '../services/api';
+import { 
+  Clock, 
+  User as UserIcon, 
+  Wrench, 
+  AlertTriangle, 
+  X, 
   Plus,
-  CheckCircle,
-  XCircle,
-  Calendar,
+  Play,
+  TrendingUp,
+  TrendingDown,
+  Activity,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Zap,
+  ZapOff,
+  Calendar,
+  CalendarDays
 } from 'lucide-react';
-import { toast } from 'react-toastify';
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+import { useAuth } from '../context/AuthContext';
+import { ThemeContext } from '../App';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
 
 interface ProductionTimelineProps {
   machineId: string;
-  onAddStoppage: (stoppage: any) => void;
-  onUpdateProduction: (machineId: string, hour: number, date: string, data: any) => void;
+  onAddStoppage?: (stoppage: Partial<StoppageRecord>) => void;
+  onUpdateProduction?: (machineId: string, hour: number, date: string, data: any) => void;
 }
 
-const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
+interface ProductionModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  hour: ProductionHour;
+  date: string;
+  machineId: string;
+  onAddStoppage?: (stoppage: Partial<StoppageRecord>) => void;
+  onUpdateProduction?: (machineId: string, hour: number, date: string, data: any) => void;
+  availableOperators?: User[];
+  availableMolds?: Mold[];
+  shifts: any[];
+}
+
+const ProductionModal: React.FC<ProductionModalProps> = ({
+  isOpen,
+  onClose,
+  hour,
+  date,
   machineId,
   onAddStoppage,
-  onUpdateProduction
+  onUpdateProduction,
+  availableOperators = [],
+  availableMolds = [],
+  shifts = []
 }) => {
-  const { user, isAdmin } = useAuth();
   const { isDarkMode } = useContext(ThemeContext);
-  const [timeline, setTimeline] = useState<ProductionTimelineDay[]>([]);
-  const [users, setUsers] = useState<User[]>([]);
-  const [molds, setMolds] = useState<Mold[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedTimeframe, setSelectedTimeframe] = useState<'today' | 'week' | 'month' | 'custom'>('today');
-  const [customStartDate, setCustomStartDate] = useState('');
-  const [customEndDate, setCustomEndDate] = useState('');
-  const [editingCell, setEditingCell] = useState<{
-    date: string;
-    hour: number;
-    field: 'operator' | 'mold' | 'defects';
-  } | null>(null);
-  const [editValues, setEditValues] = useState({
-    operatorId: '',
-    moldId: '',
-    defectiveUnits: 0,
-    applyToShift: false
-  });
-  const [showStoppageModal, setShowStoppageModal] = useState<{
-    date: string;
-    hour: number;
-    pendingStoppageId?: string;
-  } | null>(null);
+  const [activeTab, setActiveTab] = useState<'details' | 'stoppage' | 'assignment'>('details');
+  const { user: currentUser } = useAuth();
+  
   const [stoppageForm, setStoppageForm] = useState({
     reason: '',
     description: '',
-    duration: 0,
+    duration: 5,
     sapNotificationNumber: ''
   });
-  const [currentPakistanTime, setCurrentPakistanTime] = useState(new Date());
+  const [assignmentForm, setAssignmentForm] = useState({
+    operatorId: currentUser?.role === 'operator' 
+      ? (currentUser._id || '')
+      : (hour.operator?._id || ''),
+    moldId: hour.mold?._id || '',
+    defectiveUnits: hour.defectiveUnits || 0
+  });
+  const [applyToShift, setApplyToShift] = useState(false);
+  const [shiftInfo, setShiftInfo] = useState<{name: string; hours: number[]} | null>(null);
+  
+  // Theme classes
+  const bgClass = isDarkMode ? 'bg-gray-900' : 'bg-gray-50';
+  const cardBgClass = isDarkMode ? 'bg-gray-800' : 'bg-white';
+  const cardBorderClass = isDarkMode ? 'border-gray-700' : 'border-gray-200';
+  const textClass = isDarkMode ? 'text-white' : 'text-gray-900';
+  const textSecondaryClass = isDarkMode ? 'text-gray-400' : 'text-gray-600';
+  const inputBgClass = isDarkMode ? 'bg-gray-700' : 'bg-white';
+  const inputBorderClass = isDarkMode ? 'border-gray-600' : 'border-gray-300';
+  const buttonPrimaryClass = isDarkMode 
+    ? 'bg-blue-600 hover:bg-blue-700' 
+    : 'bg-blue-600 hover:bg-blue-500';
+  const buttonSecondaryClass = isDarkMode 
+    ? 'border-gray-600 text-gray-300 hover:bg-gray-700' 
+    : 'border-gray-300 text-gray-700 hover:bg-gray-100';
+
+  // Check for pending stoppages
+  const pendingStoppage = hour.stoppages.find(s => s.reason === 'unclassified' || (s as any).isPending);
+
+  // Detect shift when hour changes
+  useEffect(() => {
+    if (shifts.length > 0 && hour) {
+      // Find shift containing the current hour
+      const currentShift = shifts.find(shift => {
+        const startHour = parseInt(shift.startTime.split(':')[0]);
+        const endHour = parseInt(shift.endTime.split(':')[0]);
+        
+        if (endHour > startHour) {
+          return hour.hour >= startHour && hour.hour < endHour;
+        } else {
+          return hour.hour >= startHour || hour.hour < endHour;
+        }
+      });
+
+      if (currentShift) {
+        const startHour = parseInt(currentShift.startTime.split(':')[0]);
+        const endHour = parseInt(currentShift.endTime.split(':')[0]);
+        const shiftHours = [];
+
+        if (startHour <= endHour) {
+          for (let h = startHour; h < endHour; h++) {
+            shiftHours.push(h);
+          }
+        } else {
+          if (hour.hour >= startHour) {
+            for (let h = startHour; h < 24; h++) shiftHours.push(h);
+          } else if (hour.hour < endHour) {
+            for (let h = 0; h < endHour; h++) shiftHours.push(h);
+          }
+        }
+
+        setShiftInfo({
+          name: currentShift.name,
+          hours: shiftHours
+        });
+        setApplyToShift(false);
+      } else {
+        setShiftInfo(null);
+        setApplyToShift(false);
+      }
+    }
+  }, [shifts, hour]);
+
+  if (!isOpen) return null;
+
+  const handleStoppageSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!stoppageForm.reason.trim()) return;
+
+    // Validate SAP notification number for breakdown
+    if (stoppageForm.reason === 'breakdown') {
+      if (!stoppageForm.sapNotificationNumber || stoppageForm.sapNotificationNumber.trim() === '') {
+        toast.error('SAP notification number is required for breakdown stoppages');
+        return;
+      }
+      if (!/^\d+$/.test(stoppageForm.sapNotificationNumber.trim())) {
+        toast.error('SAP notification number must contain only numbers');
+        return;
+      }
+    }
+    try {
+      const stoppageData = {
+        machineId,
+        hour: hour.hour,
+        date,
+        reason: stoppageForm.reason,
+        description: stoppageForm.description.trim(),
+        duration: stoppageForm.duration,
+        ...(stoppageForm.reason === 'breakdown' && { sapNotificationNumber: stoppageForm.sapNotificationNumber }),
+        ...(pendingStoppage && { pendingStoppageId: (pendingStoppage as any)._id })
+      };
+
+      await apiService.addStoppageRecord(stoppageData);
+      
+      setStoppageForm({ reason: '', description: '', duration: 5, sapNotificationNumber: '' });
+      toast.success('Stoppage recorded successfully');
+      onClose();
+    } catch (error) {
+      console.error('Failed to add stoppage:', error);
+      toast.error('Failed to record stoppage');
+    }
+
+    socketService.emit('stoppage-updated', {
+      machineId,
+      date,
+      hour: hour.hour
+    });
+  };
+
+  const handleAssignmentSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const operatorId = assignmentForm.operatorId === '' ? null : assignmentForm.operatorId;
+    const moldId = assignmentForm.moldId === '' ? null : assignmentForm.moldId;
+
+    try {
+      await apiService.updateProductionAssignment({
+        machineId,
+        hour: hour.hour,
+        date,
+        operatorId,
+        moldId,
+        defectiveUnits: assignmentForm.defectiveUnits,
+        applyToShift: shiftInfo ? applyToShift : false
+      });
+      
+      const message = applyToShift && shiftInfo 
+        ? `Assignment updated for entire ${shiftInfo.name} shift` 
+        : 'Assignment updated successfully';
+      
+      toast.success(message);
+      onClose();
+      
+    } catch (error) {
+      console.error('Failed to update assignment:', error);
+      toast.error('Failed to update assignment');
+    }
+
+    socketService.emit('production-assignment-updated', {
+      machineId,
+      date,
+      hours: applyToShift && shiftInfo ? shiftInfo.hours : [hour.hour],
+      originalHour: hour.hour,
+      operatorId: operatorId,
+      moldId: moldId,
+      defectiveUnits: assignmentForm.defectiveUnits
+    });
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'running': return isDarkMode ? 'text-green-400' : 'text-green-600';
+      case 'stoppage': return isDarkMode ? 'text-red-400' : 'text-red-600';
+      case 'stopped_yet_producing': return isDarkMode ? 'text-orange-400' : 'text-orange-600';
+      case 'inactive': return isDarkMode ? 'text-gray-400' : 'text-gray-600';
+      default: return isDarkMode ? 'text-gray-400' : 'text-gray-600';
+    }
+  };
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'running': return <Play className="h-4 w-4" />;
+      case 'stoppage': return <AlertTriangle className="h-4 w-4" />;
+      case 'stopped_yet_producing': return <ZapOff className="h-4 w-4" />;
+      case 'inactive': return <Activity className="h-4 w-4" />;
+      default: return <Activity className="h-4 w-4" />;
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className={`rounded-lg border w-full max-w-2xl max-h-[90vh] overflow-y-auto ${cardBgClass} ${cardBorderClass}`}>
+        <div className={`flex items-center justify-between p-6 border-b ${cardBorderClass}`}>
+          <h3 className={`text-lg font-semibold ${textClass}`}>
+            Production Details - {format(new Date(date), 'MMM dd')}, {hour.hour.toString().padStart(2, '0')}:00
+            {pendingStoppage && (
+              <span className={`ml-2 text-sm animate-pulse ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
+                (Unclassified Stoppage - Needs Categorization)
+              </span>
+            )}
+          </h3>
+          <button
+            onClick={onClose}
+            className={textSecondaryClass}
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Tabs */}
+        <div className={`border-b ${cardBorderClass}`}>
+          <nav className="flex space-x-8 px-6">
+            {[
+              { id: 'details', label: 'Details', icon: Activity },
+              { id: 'assignment', label: 'Assignment', icon: UserIcon },
+              { id: 'stoppage', label: pendingStoppage ? 'Categorize Stoppage' : 'Add Stoppage', icon: pendingStoppage ? AlertTriangle : Plus }
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as any)}
+                className={`flex items-center space-x-2 py-3 px-1 border-b-2 font-medium text-sm ${
+                  activeTab === tab.id
+                    ? 'border-blue-500 text-blue-400'
+                    : `border-transparent ${textSecondaryClass} hover:${textClass}`
+                } ${pendingStoppage && tab.id === 'stoppage' ? (isDarkMode ? 'text-red-400' : 'text-red-600') + ' animate-pulse' : ''}`}
+              >
+                <tab.icon className="h-4 w-4" />
+                <span>{tab.label}</span>
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        <div className="p-6">
+          {/* Details Tab */}
+          {activeTab === 'details' && (
+            <div className="space-y-6">
+              {/* Production Summary */}
+              <div className={`rounded-lg p-4 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                <h4 className={`text-sm font-medium ${textClass} mb-3`}>Production Summary</h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="text-center">
+                    <div className="flex items-center justify-center mb-2">
+                      <TrendingUp className={`h-5 w-5 ${isDarkMode ? 'text-green-400' : 'text-green-500'}`} />
+                    </div>
+                    <div className={`text-2xl font-bold ${textClass}`}>{hour.unitsProduced}</div>
+                    <div className={`text-xs ${textSecondaryClass}`}>Units Produced</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="flex items-center justify-center mb-2">
+                      <TrendingDown className={`h-5 w-5 ${isDarkMode ? 'text-red-400' : 'text-red-500'}`} />
+                    </div>
+                    <div className={`text-2xl font-bold ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>{hour.defectiveUnits}</div>
+                    <div className={`text-xs ${textSecondaryClass}`}>Defective Units</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="flex items-center justify-center mb-2">
+                      <div className={getStatusColor(hour.status)}>
+                        {getStatusIcon(hour.status)}
+                      </div>
+                    </div>
+                    <div className={`text-sm font-medium capitalize ${getStatusColor(hour.status)}`}>
+                      {hour.status.replace('_', ' ')}
+                    </div>
+                    <div className={`text-xs ${textSecondaryClass}`}>Status</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="flex items-center justify-center mb-2">
+                      <Activity className={`h-5 w-5 ${isDarkMode ? 'text-blue-400' : 'text-blue-500'}`} />
+                    </div>
+                    <div className={`text-2xl font-bold ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                      {hour.unitsProduced > 0 ? ((hour.unitsProduced - hour.defectiveUnits) / hour.unitsProduced * 100).toFixed(1) : 0}%
+                    </div>
+                    <div className={`text-xs ${textSecondaryClass}`}>Quality Rate</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Time Distribution */}
+              <div className={`rounded-lg p-4 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                <h4 className={`text-sm font-medium ${textClass} mb-3`}>Time Distribution</h4>
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="text-center">
+                    <div className={`text-lg font-bold ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
+                      {Math.min(60, hour.runningMinutes || 0)}m
+                    </div>
+                    <div className={`text-xs ${textSecondaryClass}`}>Running Time</div>
+                  </div>
+                  <div className="text-center">
+                    <div className={`text-lg font-bold ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
+                      {Math.min(60, hour.stoppageMinutes || 0)}m
+                    </div>
+                    <div className={`text-xs ${textSecondaryClass}`}>Stoppage Time</div>
+                  </div>
+                  <div className="text-center">
+                    <div className={`text-lg font-bold ${textSecondaryClass}`}>
+                      {60 - Math.min(60, hour.runningMinutes || 0) - Math.min(60, hour.stoppageMinutes || 0)}m
+                    </div>
+                    <div className={`text-xs ${textSecondaryClass}`}>Inactive Time</div>
+                  </div>
+                </div>
+                
+                {/* Visual time bar */}
+                <div className="mt-3 h-4 bg-gray-600 rounded-full overflow-hidden">
+                  <div className="h-full flex">
+                    <div 
+                      className="bg-green-500" 
+                      style={{ width: `${Math.min(100, ((hour.runningMinutes || 0) / 60) * 100)}%` }}
+                    ></div>
+                    <div 
+                      className="bg-red-500" 
+                      style={{ width: `${Math.min(100, ((hour.stoppageMinutes || 0) / 60) * 100)}%` }}
+                    ></div>
+                    <div 
+                      className="bg-gray-500" 
+                      style={{ width: `${Math.max(0, ((60 - (hour.runningMinutes || 0) - (hour.stoppageMinutes || 0)) / 60) * 100)}%` }}
+                    ></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Assignment Information */}
+              <div className={`rounded-lg p-4 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                <h4 className={`text-sm font-medium ${textClass} mb-3`}>Assignment Information</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="flex items-center space-x-3">
+                    <UserIcon className={`h-5 w-5 ${isDarkMode ? 'text-blue-400' : 'text-blue-500'}`} />
+                    <div>
+                      <div className={`text-sm ${textSecondaryClass}`}>Operator</div>
+                      <div className={`font-medium ${textClass}`}>
+                        {hour.operator?.username || 'Not assigned'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-3">
+                    <Wrench className={`h-5 w-5 ${isDarkMode ? 'text-purple-400' : 'text-purple-500'}`} />
+                    <div>
+                      <div className={`text-sm ${textSecondaryClass}`}>Mold</div>
+                      <div className={`font-medium ${textClass}`}>
+                        {hour.mold?.name || 'Not assigned'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Stoppages */}
+              {hour.stoppages.length > 0 && (
+                <div className={`rounded-lg p-4 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                  <h4 className={`text-sm font-medium ${textClass} mb-3`}>Stoppages</h4>
+                  <div className="space-y-3">
+                    {hour.stoppages.map((stoppage, index) => (
+                      <div key={index} className={`rounded-lg p-3 ${
+                        stoppage.reason === 'unclassified' || (stoppage as any).isPending 
+                          ? isDarkMode 
+                            ? 'bg-red-900/20 border border-red-500' 
+                            : 'bg-red-100 border border-red-300'
+                          : isDarkMode 
+                            ? 'bg-gray-600' 
+                            : 'bg-gray-200'
+                      }`}>
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center space-x-2">
+                            <AlertTriangle className={`h-4 w-4 ${
+                              stoppage.reason === 'unclassified' || (stoppage as any).isPending 
+                                ? isDarkMode 
+                                  ? 'text-red-400' 
+                                  : 'text-red-600'
+                                : isDarkMode 
+                                  ? 'text-red-400' 
+                                  : 'text-red-600'
+                            }`} />
+                            <span className={`text-sm font-medium ${textClass} capitalize`}>
+                              {stoppage.reason === 'unclassified' ? 'Pending Categorization' : stoppage.reason.replace('_', ' ')}
+                            </span>
+                          </div>
+                          <span className={`text-xs ${textSecondaryClass}`}>
+                            {stoppage.duration || 0} min
+                          </span>
+                        </div>
+                        {stoppage.description && (
+                          <p className={`text-xs ml-6 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>{stoppage.description}</p>
+                        )}
+                        {(stoppage.reason === 'unclassified' || (stoppage as any).isPending) && (
+                          <p className={`text-xs ml-6 mt-1 ${isDarkMode ? 'text-red-300' : 'text-red-600'}`}>
+                            Click "Categorize Stoppage" tab to assign a reason
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Assignment Tab */}
+          {activeTab === 'assignment' && (
+            <form onSubmit={handleAssignmentSubmit} className="space-y-4">
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${textSecondaryClass}`}>
+                  Operator
+                </label>
+
+                <select
+                  value={assignmentForm.operatorId}
+                  onChange={(e) => setAssignmentForm({...assignmentForm, operatorId: e.target.value})}
+                  className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                >
+                  <option value="">No operator assigned</option>
+                  {availableOperators.map((operator) => (
+                    <option key={operator._id} value={operator._id}>
+                      {operator.username}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${textSecondaryClass}`}>
+                  Mold
+                </label>
+                <select
+                  value={assignmentForm.moldId}
+                  onChange={(e) => setAssignmentForm({...assignmentForm, moldId: e.target.value})}
+                  className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                >
+                  <option value="">No mold assigned</option>
+                  {availableMolds.map((mold) => (
+                    <option key={mold._id} value={mold._id}>
+                      {mold.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${textSecondaryClass}`}>
+                  Defective Units
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={assignmentForm.defectiveUnits}
+                  onChange={(e) => setAssignmentForm({...assignmentForm, defectiveUnits: parseInt(e.target.value) || 0})}
+                  className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                />
+              </div>
+
+              {/* Shift Assignment Section */}
+              {shiftInfo && (
+                <div className={`mt-4 p-3 rounded-lg border ${isDarkMode ? 'bg-gray-750 border-blue-500/30' : 'bg-blue-50 border-blue-300'}`}>
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="applyToShift"
+                      checked={applyToShift}
+                      onChange={(e) => setApplyToShift(e.target.checked)}
+                      className={`h-4 w-4 text-blue-600 rounded ${inputBorderClass} ${inputBgClass} focus:ring-blue-500`}
+                    />
+                    <label htmlFor="applyToShift" className={`ml-2 text-sm font-medium ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                      Apply to entire shift ({shiftInfo.name})
+                    </label>
+                  </div>
+                  
+                  {applyToShift && (
+                    <div className={`mt-2 text-xs ${textSecondaryClass}`}>
+                      <p>This will apply operator and mold to:</p>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {shiftInfo.hours.map(h => (
+                          <span 
+                            key={h} 
+                            className={`px-2 py-1 rounded ${
+                              h === hour.hour 
+                                ? 'bg-blue-600 text-white' 
+                                : `${isDarkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-200 text-gray-700'}`
+                            }`}
+                          >
+                            {h.toString().padStart(2, '0')}:00
+                          </span>
+                        ))}
+                      </div>
+                      <p className={`mt-2 ${isDarkMode ? 'text-blue-300' : 'text-blue-600'}`}>
+                        Note: Defective units will only be updated for the current hour ({hour.hour}:00)
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex space-x-3 pt-4">
+                <button
+                  type="submit"
+                  className={`flex-1 py-2 px-4 rounded-md ${buttonPrimaryClass} text-white`}
+                >
+                  Update Assignment
+                </button>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className={`px-4 py-2 ${buttonSecondaryClass} rounded-md`}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* Stoppage Tab */}
+          {activeTab === 'stoppage' && (
+            <form onSubmit={handleStoppageSubmit} className="space-y-4">
+              {pendingStoppage && (
+                <div className={`rounded-lg p-4 mb-4 ${
+                  isDarkMode ? 'bg-red-900/20 border border-red-500' : 'bg-red-100 border border-red-300'
+                }`}>
+                  <div className="flex items-center space-x-2 mb-2">
+                    <AlertTriangle className={`h-5 w-5 ${isDarkMode ? 'text-red-400' : 'text-red-600'}`} />
+                    <h4 className={`font-medium ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>Unclassified Stoppage Detected</h4>
+                  </div>
+                  <p className={`text-sm ${isDarkMode ? 'text-red-300' : 'text-red-700'}`}>
+                    An unclassified stoppage was automatically detected for {pendingStoppage.duration} minutes. 
+                    Please categorize the reason for this stoppage.
+                  </p>
+                </div>
+              )}
+
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${textSecondaryClass}`}>
+                  Stoppage Reason *
+                </label>
+                <select
+                  required
+                  value={stoppageForm.reason}
+                  onChange={(e) => setStoppageForm({...stoppageForm, reason: e.target.value})}
+                  className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                >
+                  <option value="">Select reason...</option>
+                  <option value="planned">Planned Maintenance</option>
+                  <option value="mold_change">Mold Change</option>
+                  <option value="breakdown">Breakdown</option>
+                  <option value="maintenance">Unplanned Maintenance</option>
+                  <option value="material_shortage">Material Shortage</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+
+              {!pendingStoppage && (
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${textSecondaryClass}`}>
+                    Duration (minutes) *
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    max="60"
+                    value={stoppageForm.duration}
+                    onChange={(e) => setStoppageForm({...stoppageForm, duration: parseInt(e.target.value) || 5})}
+                    className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${textSecondaryClass}`}>
+                  Description
+                </label>
+                <textarea
+                  value={stoppageForm.description}
+                  onChange={(e) => setStoppageForm({...stoppageForm, description: e.target.value})}
+                  rows={3}
+                  className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                  placeholder="Additional details about the stoppage..."
+                />
+              </div>
+
+              {stoppageForm.reason === 'breakdown' && (
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${textSecondaryClass}`}>
+                    SAP Notification Number *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={stoppageForm.sapNotificationNumber}
+                    onChange={(e) => setStoppageForm({...stoppageForm, sapNotificationNumber: e.target.value})}
+                    className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    placeholder="Enter SAP notification number (numbers only)"
+                    pattern="[0-9]*"
+                  />
+                  <p className={`text-xs mt-1 ${textSecondaryClass}`}>
+                    Required for breakdown stoppages. Numbers only.
+                  </p>
+                </div>
+              )}
+              <div className="flex space-x-3 pt-4">
+                <button
+                  type="submit"
+                  disabled={!stoppageForm.reason.trim()}
+                  className={`flex-1 py-2 px-4 rounded-md ${isDarkMode ? 'bg-red-600 hover:bg-red-700' : 'bg-red-600 hover:bg-red-500'} text-white disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  {pendingStoppage ? 'Categorize Stoppage' : 'Add Stoppage'}
+                </button>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className={`px-4 py-2 ${buttonSecondaryClass} rounded-md`}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ProductionTimeline: React.FC<ProductionTimelineProps> = ({ 
+  machineId, 
+  onAddStoppage, 
+  onUpdateProduction,
+}) => {
+  const { isDarkMode } = useContext(ThemeContext);
+  const [data, setData] = useState<ProductionTimelineDay[]>([]);
+  const [selectedHour, setSelectedHour] = useState<{ hour: ProductionHour; date: string } | null>(null);
+  const [timeframe, setTimeframe] = useState<'today' | 'week' | 'month' | 'custom'>('today');
+  const [customStartDate, setCustomStartDate] = useState<Date>(startOfWeek(new Date()));
+  const [customEndDate, setCustomEndDate] = useState<Date>(new Date());
+  const [selectedDayIndex, setSelectedDayIndex] = useState(0);
+  const [availableOperators, setAvailableOperators] = useState<User[]>([]);
+  const [availableMolds, setAvailableMolds] = useState<Mold[]>([]);
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [machineStatus, setMachineStatus] = useState<string>('inactive');
+  const [machineColor, setMachineColor] = useState<string>('gray');
+  const [shifts, setShifts] = useState<any[]>([]);
+  const { user: currentUser } = useAuth();
+  const [isLoading, setIsLoading] = useState(false);
 
   // Theme classes
   const bgClass = isDarkMode ? 'bg-gray-900' : 'bg-gray-50';
@@ -83,730 +714,746 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
     ? 'border-gray-600 text-gray-300 hover:bg-gray-700' 
     : 'border-gray-300 text-gray-700 hover:bg-gray-100';
 
-  // Helper function to format date as YYYY-MM-DD in Pakistan time
-  const formatPakistanDate = (date: Date) => {
-    const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
-    const pakistanDate = new Date(date.getTime() + PAKISTAN_OFFSET);
-    const year = pakistanDate.getUTCFullYear();
-    const month = String(pakistanDate.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(pakistanDate.getUTCDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+  const fetchProductionData = async () => {
+    setIsLoading(true);
+    try {
+      let params: any = { timeframe };
+      
+      if (timeframe === 'custom') {
+        params.startDate = format(customStartDate, 'yyyy-MM-dd');
+        params.endDate = format(customEndDate, 'yyyy-MM-dd');
+      }
+
+      const response = await apiService.getProductionTimeline(machineId, params);
+      setData(response.timeline || []);
+      
+      // Auto-select today when data changes
+      if (response.timeline?.length > 0) {
+        const todayIndex = response.timeline.findIndex((day: any) => isToday(parseISO(day.date)));
+        setSelectedDayIndex(todayIndex >= 0 ? todayIndex : 0);
+      }
+    } catch (error) {
+      console.error('Failed to fetch production data:', error);
+      toast.error('Failed to load production data');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Update Pakistan time every minute
-  useEffect(() => {
-    const updatePakistanTime = () => {
-      const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
-      setCurrentPakistanTime(new Date(Date.now() + PAKISTAN_OFFSET));
-    };
+  const fetchOperatorsAndMolds = async () => {
+    try {
+      let operators: User[] = [];
+      if (currentUser?.role === 'admin') {
+        operators = await apiService.getUsers();
+      } else {
+        const operator = await apiService.getCurrentUser();
+        operators = [operator];
+      }
+      
+      operators = operators.filter(u => u.role === 'operator');
+      const molds = await apiService.getMolds();
+      
+      setAvailableOperators(operators);
+      setAvailableMolds(molds);
+      
+      return { operators, molds };
+    } catch (error) {
+      console.error('Failed to fetch operators and molds:', error);
+      return { operators: [], molds: [] };
+    }
+  };
 
-    updatePakistanTime();
-    const timer = setInterval(updatePakistanTime, 60000);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 60000);
     
     return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    fetchTimelineData();
-    fetchUsers();
-    fetchMolds();
-    setupSocketListeners();
-  }, [machineId, selectedTimeframe, customStartDate, customEndDate]);
+    fetchProductionData();
+  }, [timeframe, machineId, customStartDate, customEndDate]);
 
-  const setupSocketListeners = () => {
+  useEffect(() => {
+    fetchOperatorsAndMolds();
+  }, [currentUser]);
+
+  useEffect(() => {
+    socketService.connect();
+    socketService.joinMachine(machineId);
+
     const handleProductionUpdate = (update: any) => {
       if (update.machineId === machineId) {
-        setTimeline(prev => 
-          prev.map(day => {
-            if (day.date !== update.date) return day;
-            return {
-              ...day,
-              hours: day.hours.map(hour => 
-                hour.hour === update.hour 
-                  ? { 
-                      ...hour, 
-                      unitsProduced: update.unitsProduced,
-                      status: update.status,
-                      runningMinutes: update.runningMinutes,
-                      stoppageMinutes: update.stoppageMinutes
-                    }
-                  : hour
-              )
-            };
-          })
-        );
+        setData(prevData => {
+          const newData = [...prevData];
+          const dayIndex = newData.findIndex(day => day.date === update.date);
+          
+          if (dayIndex >= 0) {
+            const hourIndex = newData[dayIndex].hours.findIndex(h => h.hour === update.hour);
+            if (hourIndex >= 0) {
+              newData[dayIndex].hours[hourIndex] = {
+                ...newData[dayIndex].hours[hourIndex],
+                unitsProduced: update.unitsProduced,
+                status: update.status,
+                runningMinutes: update.runningMinutes || newData[dayIndex].hours[hourIndex].runningMinutes,
+                stoppageMinutes: update.stoppageMinutes || newData[dayIndex].hours[hourIndex].stoppageMinutes
+              };
+            }
+          }
+          return newData;
+        });
       }
     };
 
-    const handleStoppageDetected = (stoppage: any) => {
-      if (stoppage.machineId === machineId) {
-        fetchTimelineData();
-      }
-    };
-
-    const handleAssignmentUpdated = (update: any) => {
+    const handleRunningTimeUpdate = (update: any) => {
       if (update.machineId === machineId) {
-        setTimeline(prev => 
-          prev.map(day => {
-            if (day.date !== update.date) return day;
-            return {
-              ...day,
-              hours: day.hours.map(hour => {
-                if (!update.hours.includes(hour.hour)) return hour;
-                return {
-                  ...hour,
-                  operator: update.operatorId ? users.find(u => u._id === update.operatorId) : undefined,
-                  mold: update.moldId ? molds.find(m => m._id === update.moldId) : undefined,
-                  ...(hour.hour === update.originalHour && update.defectiveUnits !== undefined && {
-                    defectiveUnits: update.defectiveUnits
-                  })
+        setData(prevData => {
+          const newData = [...prevData];
+          const dayIndex = newData.findIndex(day => day.date === update.date);
+          
+          if (dayIndex >= 0) {
+            const hourIndex = newData[dayIndex].hours.findIndex(h => h.hour === update.hour);
+            if (hourIndex >= 0) {
+              newData[dayIndex].hours[hourIndex] = {
+                ...newData[dayIndex].hours[hourIndex],
+                runningMinutes: update.runningMinutes,
+                status: 'running'
+              };
+            }
+          }
+          return newData;
+        });
+      }
+    };
+
+    const handleMachineStateUpdate = (update: any) => {
+      if (update.machineId === machineId) {
+        setMachineStatus(update.status);
+        setMachineColor(update.color);
+      }
+    };
+
+    const handleUnclassifiedStoppageDetected = (stoppage: any) => {
+      if (stoppage.machineId === machineId) {
+        setData(prevData => {
+          const newData = [...prevData];
+          const dayIndex = newData.findIndex(day => day.date === stoppage.date);
+          
+          if (dayIndex >= 0) {
+            const hourIndex = newData[dayIndex].hours.findIndex(h => h.hour === stoppage.hour);
+            if (hourIndex >= 0) {
+              const unclassifiedStoppageRecord: StoppageRecord = {
+                _id: stoppage.pendingStoppageId || `unclassified_${Date.now()}`,
+                reason: 'unclassified',
+                description: 'Automatic stoppage detection - awaiting categorization',
+                startTime: stoppage.stoppageStart,
+                endTime: null,
+                duration: stoppage.duration || 0
+              };
+
+              const existingIndex = newData[dayIndex].hours[hourIndex].stoppages.findIndex(
+                s => s._id === stoppage.pendingStoppageId || s.reason === 'unclassified'
+              );
+
+              if (existingIndex === -1) {
+                newData[dayIndex].hours[hourIndex].stoppages.push(unclassifiedStoppageRecord);
+              }
+
+              newData[dayIndex].hours[hourIndex].status = 'stoppage';
+              newData[dayIndex].hours[hourIndex].stoppageMinutes = 
+                (newData[dayIndex].hours[hourIndex].stoppageMinutes || 0) + (stoppage.duration || 0);
+            }
+          }
+          
+          return newData;
+        });
+
+        toast.warning(`Unclassified stoppage detected - requires categorization`, {
+          position: "top-right",
+          autoClose: 5000,
+          theme: isDarkMode ? "dark" : "light"
+        });
+      }
+    };
+
+    const handleStoppageAdded = (stoppage: any) => {
+      if (stoppage.machineId === machineId) {
+        setData(prevData => {
+          const newData = [...prevData];
+          const dayIndex = newData.findIndex(day => day.date === stoppage.date);
+          
+          if (dayIndex >= 0) {
+            const hourIndex = newData[dayIndex].hours.findIndex(h => h.hour === stoppage.hour);
+            if (hourIndex >= 0) {
+              newData[dayIndex].hours[hourIndex].stoppages = 
+                newData[dayIndex].hours[hourIndex].stoppages.filter(s => s.reason !== 'unclassified');
+              
+              newData[dayIndex].hours[hourIndex].stoppages.push({
+                _id: `stoppage_${Date.now()}`,
+                reason: stoppage.stoppage.reason as any,
+                description: stoppage.stoppage.description,
+                startTime: new Date().toISOString(),
+                endTime: null,
+                duration: stoppage.stoppage.duration
+              });
+
+              if (stoppage.stoppage.reason === 'breakdown') {
+                newData[dayIndex].hours[hourIndex].status = 'stoppage';
+              } else {
+                newData[dayIndex].hours[hourIndex].status = 'stoppage';
+              }
+            }
+
+            newData[dayIndex].hours[hourIndex].stoppageMinutes = 
+            newData[dayIndex].hours[hourIndex].stoppages.reduce(
+              (sum, s) => sum + (s.duration || 0), 0
+            );
+
+          }
+
+          return newData;
+        });
+      }
+    };
+
+    const handleProductionAssignmentUpdated = async (update: any) => {
+      if (update.machineId === machineId) {
+        try {
+          const { operators, molds } = await fetchOperatorsAndMolds();
+          
+          setData(prevData => {
+            const newData = [...prevData];
+            const dayIndex = newData.findIndex(day => day.date === update.date);
+            
+            if (dayIndex >= 0) {
+              update.hours.forEach((targetHour: number) => {
+                let hourIndex = newData[dayIndex].hours.findIndex(h => h.hour === targetHour);
+
+                if (hourIndex === -1) {
+                  const newHour: ProductionHour = {
+                    hour: targetHour,
+                    unitsProduced: 0,
+                    defectiveUnits: 0,
+                    status: 'inactive',
+                    operator: undefined,
+                    mold: undefined,
+                    stoppages: [],
+                    runningMinutes: 0,
+                    stoppageMinutes: 0
+                  };
+                  newData[dayIndex].hours.push(newHour);
+                  hourIndex = newData[dayIndex].hours.length - 1;
+                }
+
+                if (hourIndex >= 0) {
+                  if (update.operatorId !== null) {
+                    const operator = operators.find(op => op._id === update.operatorId);
+                    newData[dayIndex].hours[hourIndex].operator = operator || undefined;
+                  } else {
+                    newData[dayIndex].hours[hourIndex].operator = undefined;
+                  }
+                  
+                  if (update.moldId !== null) {
+                    const mold = molds.find((m: any) => m._id === update.moldId);
+                    newData[dayIndex].hours[hourIndex].mold = mold || undefined;
+                  } else {
+                    newData[dayIndex].hours[hourIndex].mold = undefined;
+                  }
+                  
+                  if (targetHour === update.originalHour && update.defectiveUnits !== undefined) {
+                    newData[dayIndex].hours[hourIndex].defectiveUnits = update.defectiveUnits;
+                  }
+                }
+              });
+            }
+            return newData;
+          });
+        } catch (error) {
+          console.error('Failed to update assignment:', error);
+        }
+      }
+    };
+
+    const handleStoppageUpdated = (update: any) => {
+      if (update.machineId === machineId) {
+        setData(prevData => {
+          const newData = [...prevData];
+          const dayIndex = newData.findIndex(day => day.date === update.date);
+          
+          if (dayIndex >= 0) {
+            const hourIndex = newData[dayIndex].hours.findIndex(h => h.hour === update.hour);
+            if (hourIndex >= 0) {
+              const stoppageIndex = newData[dayIndex].hours[hourIndex].stoppages.findIndex(
+                s => s._id === update.stoppageId
+              );
+              
+              if (stoppageIndex >= 0) {
+                newData[dayIndex].hours[hourIndex].stoppages[stoppageIndex] = {
+                  ...newData[dayIndex].hours[hourIndex].stoppages[stoppageIndex],
+                  duration: update.duration,
+                  startTime: new Date(Date.now() - update.duration * 60000).toISOString()
                 };
-              })
-            };
-          })
-        );
+                
+                newData[dayIndex].hours[hourIndex].stoppageMinutes = 
+                  newData[dayIndex].hours[hourIndex].stoppages.reduce(
+                    (sum, stoppage) => sum + (stoppage.duration || 0), 0
+                  );
+              }
+            }
+          }
+          return newData;
+        });
       }
     };
 
     socketService.on('production-update', handleProductionUpdate);
-    socketService.on('unclassified-stoppage-detected', handleStoppageDetected);
-    socketService.on('production-assignment-updated', handleAssignmentUpdated);
-    socketService.on('stoppage-added', handleStoppageDetected);
+    socketService.on('running-time-update', handleRunningTimeUpdate);
+    socketService.on('machine-state-update', handleMachineStateUpdate);
+    socketService.on('unclassified-stoppage-detected', handleUnclassifiedStoppageDetected);
+    socketService.on('stoppage-added', handleStoppageAdded);
+    socketService.on('production-assignment-updated', handleProductionAssignmentUpdated);
+    socketService.on('stoppage-updated', handleStoppageUpdated);
 
     return () => {
       socketService.off('production-update', handleProductionUpdate);
-      socketService.off('unclassified-stoppage-detected', handleStoppageDetected);
-      socketService.off('production-assignment-updated', handleAssignmentUpdated);
-      socketService.off('stoppage-added', handleStoppageDetected);
+      socketService.off('running-time-update', handleRunningTimeUpdate);
+      socketService.off('machine-state-update', handleMachineStateUpdate);
+      socketService.off('unclassified-stoppage-detected', handleUnclassifiedStoppageDetected);
+      socketService.off('stoppage-added', handleStoppageAdded);
+      socketService.off('production-assignment-updated', handleProductionAssignmentUpdated);
+      socketService.off('stoppage-updated', handleStoppageUpdated);
+      socketService.leaveMachine(machineId);
     };
-  };
+  }, [machineId, availableOperators, availableMolds]);
 
-  const fetchTimelineData = async () => {
-    try {
-      setLoading(true);
-      
-      let params: any = { timeframe: selectedTimeframe };
-      
-      if (selectedTimeframe === 'custom') {
-        if (!customStartDate || !customEndDate) {
-          setLoading(false);
-          return;
-        }
-        params = {
-          timeframe: 'custom',
-          startDate: customStartDate,
-          endDate: customEndDate
-        };
+  useEffect(() => {
+    const fetchShifts = async () => {
+      try {
+        const shifts = await apiService.getShifts();
+        setShifts(shifts || []);
+      } catch (error) {
+        console.error('Failed to fetch shifts:', error);
       }
-
-      const data = await apiService.getProductionTimeline(machineId, params);
-      setTimeline(data.timeline || []);
-    } catch (err) {
-      console.error('Failed to fetch timeline:', err);
-      toast.error('Failed to fetch production timeline');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchUsers = async () => {
-    try {
-      const usersData = await apiService.getUsers();
-      setUsers(usersData);
-    } catch (err) {
-      console.error('Failed to fetch users:', err);
-    }
-  };
-
-  const fetchMolds = async () => {
-    try {
-      const moldsData = await apiService.getMolds();
-      setMolds(moldsData);
-    } catch (err) {
-      console.error('Failed to fetch molds:', err);
-    }
-  };
-
-  const handleCellEdit = (date: string, hour: number, field: 'operator' | 'mold' | 'defects') => {
-    const dayData = timeline.find(d => d.date === date);
-    const hourData = dayData?.hours.find(h => h.hour === hour);
+    };
     
-    setEditingCell({ date, hour, field });
-    setEditValues({
-      operatorId: hourData?.operator?._id || '',
-      moldId: hourData?.mold?._id || '',
-      defectiveUnits: hourData?.defectiveUnits || 0,
-      applyToShift: false
-    });
+    fetchShifts();
+  }, [currentUser]);
+
+  const handleTimeframeChange = (newTimeframe: 'today' | 'week' | 'month' | 'custom') => {
+    setTimeframe(newTimeframe);
+    if (newTimeframe !== 'custom') {
+      setSelectedDayIndex(0);
+    }
   };
 
-  const handleSaveEdit = async () => {
-    if (!editingCell) return;
-
-    try {
-      const updateData: any = {};
-      
-      if (editingCell.field === 'operator') {
-        updateData.operatorId = editValues.operatorId || null;
-      } else if (editingCell.field === 'mold') {
-        updateData.moldId = editValues.moldId || null;
-      } else if (editingCell.field === 'defects') {
-        updateData.defectiveUnits = editValues.defectiveUnits;
+  const handleCustomDateApply = () => {
+    if (customStartDate && customEndDate) {
+      if (customStartDate > customEndDate) {
+        toast.error('Start date must be before end date');
+        return;
       }
-
-      updateData.applyToShift = editValues.applyToShift;
-
-      await onUpdateProduction(
-        machineId,
-        editingCell.hour,
-        editingCell.date,
-        updateData
-      );
-
-      setEditingCell(null);
-    } catch (err) {
-      console.error('Failed to save edit:', err);
+      setTimeframe('custom');
+      setSelectedDayIndex(0);
+      fetchProductionData();
     }
   };
 
-  const handleAddStoppage = async () => {
-    if (!showStoppageModal) return;
-
-    try {
-      const stoppageData = {
-        ...stoppageForm,
-        hour: showStoppageModal.hour,
-        date: showStoppageModal.date,
-        ...(showStoppageModal.pendingStoppageId && {
-          pendingStoppageId: showStoppageModal.pendingStoppageId
-        })
-      };
-
-      await onAddStoppage(stoppageData);
-      setShowStoppageModal(null);
-      setStoppageForm({
-        reason: '',
-        description: '',
-        duration: 0,
-        sapNotificationNumber: ''
-      });
-    } catch (err) {
-      console.error('Failed to add stoppage:', err);
-    }
+  const formatTime = (hour: number) => {
+    return `${hour.toString().padStart(2, '0')}:00`;
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'running': return isDarkMode ? 'bg-green-600' : 'bg-green-500';
-      case 'stoppage': return isDarkMode ? 'bg-red-600' : 'bg-red-500';
-      case 'inactive': return isDarkMode ? 'bg-gray-600' : 'bg-gray-400';
-      default: return isDarkMode ? 'bg-gray-600' : 'bg-gray-400';
-    }
-  };
+  const currentDay = data[selectedDayIndex] || data[0];
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'running': return <Play className="h-3 w-3" />;
-      case 'stoppage': return <Pause className="h-3 w-3" />;
-      case 'inactive': return <Activity className="h-3 w-3" />;
-      default: return <Activity className="h-3 w-3" />;
-    }
-  };
-
-  const isCurrentHour = (date: string, hour: number) => {
-    const today = formatPakistanDate(currentPakistanTime);
-    const currentHour = currentPakistanTime.getUTCHours();
-    return date === today && hour === currentHour;
-  };
-
-  const isPastHour = (date: string, hour: number) => {
-    const today = formatPakistanDate(currentPakistanTime);
-    const currentHour = currentPakistanTime.getUTCHours();
-    
-    if (date < today) return true;
-    if (date === today && hour < currentHour) return true;
-    return false;
-  };
-
-  const hasUnclassifiedStoppages = (hour: any) => {
-    return hour.stoppages?.some((s: StoppageRecord) => s.reason === 'unclassified') || false;
-  };
-
-  if (loading) {
+  if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      <div className="text-center py-8">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+        <p className={`mt-2 ${textSecondaryClass}`}>Loading production data...</p>
+      </div>
+    );
+  }
+
+  if (!data || data.length === 0) {
+    return (
+      <div className="text-center py-8">
+        <Clock className={`h-8 w-8 mx-auto mb-2 ${textSecondaryClass}`} />
+        <p className={textSecondaryClass}>No production data available</p>
+      </div>
+    );
+  }
+
+  if (!currentDay) {
+    return (
+      <div className="text-center py-8">
+        <Clock className={`h-8 w-8 mx-auto mb-2 ${textSecondaryClass}`} />
+        <p className={textSecondaryClass}>No data available for selected period</p>
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
+      <ToastContainer
+        position="top-right"
+        autoClose={5000}
+        hideProgressBar={false}
+        newestOnTop={false}
+        closeOnClick
+        rtl={false}
+        pauseOnFocusLoss
+        draggable
+        pauseOnHover
+        theme={isDarkMode ? "dark" : "light"}
+      />
+
       {/* Timeframe Selector */}
-      <div className="flex flex-col md:flex-row md:items-center space-y-2 md:space-y-0 md:space-x-4">
-        <span className={`text-sm font-medium ${textSecondaryClass}`}>Timeline Period:</span>
-        <div className="flex flex-wrap gap-2">
+      <div className="flex items-center justify-between">
+        <div className="flex space-x-1">
           {[
-            { value: 'today', label: 'Today' },
-            { value: 'week', label: 'This Week' },
-            { value: 'month', label: 'This Month' },
-            { value: 'custom', label: 'Custom Range' }
-          ].map((option) => (
+            { value: 'today', label: 'Today', icon: Calendar },
+            { value: 'week', label: 'This Week', icon: CalendarDays },
+            { value: 'month', label: 'This Month', icon: CalendarDays },
+            { value: 'custom', label: 'Custom', icon: Calendar }
+          ].map((mode) => (
             <button
-              key={option.value}
-              onClick={() => setSelectedTimeframe(option.value as any)}
-              className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                selectedTimeframe === option.value
+              key={mode.value}
+              onClick={() => handleTimeframeChange(mode.value as any)}
+              className={`px-3 py-1 text-sm rounded-md transition-colors flex items-center space-x-1 ${
+                timeframe === mode.value
                   ? 'bg-blue-600 text-white'
                   : `${buttonSecondaryClass}`
               }`}
             >
-              {option.label}
+              {mode.icon && <mode.icon className="h-4 w-4" />}
+              <span>{mode.label}</span>
             </button>
           ))}
         </div>
-        
-        {selectedTimeframe === 'custom' && (
-          <div className="flex space-x-2">
-            <input
-              type="date"
-              value={customStartDate}
-              onChange={(e) => setCustomStartDate(e.target.value)}
-              className={`px-3 py-1 text-sm rounded border ${inputBorderClass} ${inputBgClass} ${textClass}`}
+
+        {/* Custom Date Picker (shown only when custom is selected) */}
+        {timeframe === 'custom' && (
+          <div className={`flex items-center space-x-2 px-3 py-1 rounded-md ${isDarkMode ? 'bg-gray-800' : 'bg-gray-100'}`}>
+            <DatePicker
+              selected={customStartDate}
+              onChange={(date: Date | null) => {
+                if (date) setCustomStartDate(date);
+              }}
+              selectsStart
+              startDate={customStartDate}
+              endDate={customEndDate}
+              maxDate={new Date()}
+              className={`text-sm rounded border ${inputBorderClass} ${inputBgClass} px-2 py-1 w-28`}
             />
-            <input
-              type="date"
-              value={customEndDate}
-              onChange={(e) => setCustomEndDate(e.target.value)}
-              className={`px-3 py-1 text-sm rounded border ${inputBorderClass} ${inputBgClass} ${textClass}`}
+            <DatePicker
+              selected={customEndDate}
+              onChange={(date: Date | null) => {
+                if (date) setCustomEndDate(date);
+              }}
+              selectsEnd
+              startDate={customStartDate}
+              endDate={customEndDate}
+              minDate={customStartDate}
+              maxDate={new Date()}
+              className={`text-sm rounded border ${inputBorderClass} ${inputBgClass} px-2 py-1 w-28`}
             />
+            <button
+              onClick={handleCustomDateApply}
+              className={`px-2 py-1 text-sm rounded ${buttonPrimaryClass}`}
+            >
+              Apply
+            </button>
           </div>
         )}
+
+        {/* Machine Status Indicator */}
+        <div className={`flex items-center px-3 py-1 rounded-md ${
+          machineColor === 'green'
+            ? isDarkMode ? 'bg-green-900/30 text-green-400' : 'bg-green-100 text-green-800' 
+            : machineColor === 'red'
+            ? isDarkMode ? 'bg-red-900/30 text-red-400' : 'bg-red-100 text-red-800'
+            : machineColor === 'orange'
+            ? isDarkMode ? 'bg-orange-900/30 text-orange-400' : 'bg-orange-100 text-orange-800'
+            : isDarkMode ? 'bg-gray-900/30 text-gray-400' : 'bg-gray-100 text-gray-800'
+        }`}>
+          {machineColor === 'green' ? (
+            <Zap className="h-4 w-4 mr-1" />
+          ) : (
+            <ZapOff className="h-4 w-4 mr-1" />
+          )}
+          <span className="text-sm">
+            {machineStatus.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
+          </span>
+        </div>
       </div>
 
-      {/* Timeline Grid */}
-      <div className="overflow-x-auto">
-        <div className="min-w-full">
-          {timeline.map((day) => (
-            <div key={day.date} className={`mb-6 rounded-lg border ${cardBgClass} ${cardBorderClass}`}>
-              <div className={`p-4 border-b ${cardBorderClass} flex items-center justify-between`}>
-                <h3 className={`text-lg font-semibold ${textClass} flex items-center`}>
-                  <Calendar className="h-5 w-5 mr-2" />
-                  {new Date(day.date + 'T00:00:00').toLocaleDateString('en-US', {
-                    weekday: 'long',
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric'
-                  })}
-                </h3>
-                <div className={`text-sm ${textSecondaryClass}`}>
-                  {day.hours.reduce((sum, h) => sum + h.unitsProduced, 0)} units produced
-                </div>
-              </div>
-              
-              <div className="p-4">
-                <div className="grid grid-cols-24 gap-1">
-                  {day.hours.map((hour) => {
-                    const isCurrent = isCurrentHour(day.date, hour.hour);
-                    const isPast = isPastHour(day.date, hour.hour);
-                    const hasUnclassified = hasUnclassifiedStoppages(hour);
-                    
-                    return (
-                      <div
-                        key={hour.hour}
-                        className={`relative border rounded-lg p-2 min-h-[120px] transition-all duration-200 ${
-                          isCurrent 
-                            ? isDarkMode ? 'border-blue-500 bg-blue-900/20' : 'border-blue-500 bg-blue-50'
-                            : cardBorderClass
-                        } ${
-                          hasUnclassified 
-                            ? 'animate-pulse border-red-500' 
-                            : ''
-                        } hover:shadow-md`}
-                      >
-                        {/* Hour Header */}
-                        <div className={`text-xs font-medium mb-2 flex items-center justify-between ${textSecondaryClass}`}>
-                          <span>{hour.hour.toString().padStart(2, '0')}:00</span>
-                          {isCurrent && (
-                            <div className="h-2 w-2 bg-blue-500 rounded-full animate-pulse"></div>
-                          )}
-                        </div>
+      {/* Day Navigation */}
+      {data.length > 1 && (
+        <div className={`flex items-center justify-between rounded-lg p-3 border ${cardBgClass} ${cardBorderClass}`}>
+          <button
+            onClick={() => setSelectedDayIndex(Math.max(0, selectedDayIndex - 1))}
+            disabled={selectedDayIndex === 0}
+            className={`p-1 ${textSecondaryClass} hover:${textClass} disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+          
+          <div className="text-center">
+            <h3 className={`text-lg font-semibold ${textClass}`}>
+              {format(parseISO(currentDay.date), 'EEEE, MMMM dd, yyyy')}
+            </h3>
+            <p className={`text-sm ${textSecondaryClass}`}>
+              Total: {currentDay.hours.reduce((sum, h) => sum + h.unitsProduced, 0)} units • 
+              Defects: {currentDay.hours.reduce((sum, h) => sum + h.defectiveUnits, 0)}
+            </p>
+          </div>
+          
+          <button
+            onClick={() => setSelectedDayIndex(Math.min(data.length - 1, selectedDayIndex + 1))}
+            disabled={selectedDayIndex === data.length - 1}
+            className={`p-1 ${textSecondaryClass} hover:${textClass} disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            <ChevronRight className="h-5 w-5" />
+          </button>
+        </div>
+      )}
 
-                        {/* Status Indicator */}
-                        <div className={`flex items-center mb-2 text-xs`}>
-                          <div className={`w-2 h-2 rounded-full mr-1 ${getStatusColor(hour.status)}`}></div>
-                          <span className={`capitalize ${textSecondaryClass}`}>
-                            {hour.status === 'running' ? 'Running' : 
-                             hour.status === 'stoppage' ? 'Stoppage' : 'Inactive'}
-                          </span>
-                        </div>
-
-                        {/* Production Count */}
-                        <div className={`text-sm font-semibold mb-1 ${textClass}`}>
-                          {hour.unitsProduced} units
-                        </div>
-
-                        {/* Defective Units - Editable */}
-                        <div className="mb-2">
-                          {editingCell?.date === day.date && 
-                           editingCell?.hour === hour.hour && 
-                           editingCell?.field === 'defects' ? (
-                            <div className="space-y-1">
-                              <input
-                                type="number"
-                                min="0"
-                                value={editValues.defectiveUnits}
-                                onChange={(e) => setEditValues({
-                                  ...editValues,
-                                  defectiveUnits: parseInt(e.target.value) || 0
-                                })}
-                                className={`w-full px-2 py-1 text-xs rounded border ${inputBorderClass} ${inputBgClass} ${textClass}`}
-                              />
-                              <div className="flex space-x-1">
-                                <button
-                                  onClick={handleSaveEdit}
-                                  className="p-1 bg-green-600 text-white rounded text-xs"
-                                >
-                                  <Save className="h-3 w-3" />
-                                </button>
-                                <button
-                                  onClick={() => setEditingCell(null)}
-                                  className="p-1 bg-gray-600 text-white rounded text-xs"
-                                >
-                                  <X className="h-3 w-3" />
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div 
-                              className={`text-xs cursor-pointer hover:bg-gray-100 rounded p-1 ${
-                                hour.defectiveUnits > 0 
-                                  ? isDarkMode ? 'text-red-400' : 'text-red-600'
-                                  : textSecondaryClass
-                              }`}
-                              onClick={() => handleCellEdit(day.date, hour.hour, 'defects')}
-                            >
-                              {hour.defectiveUnits > 0 ? `${hour.defectiveUnits} defects` : 'No defects'}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Operator Assignment - Editable */}
-                        <div className="mb-2">
-                          {editingCell?.date === day.date && 
-                           editingCell?.hour === hour.hour && 
-                           editingCell?.field === 'operator' ? (
-                            <div className="space-y-1">
-                              <select
-                                value={editValues.operatorId}
-                                onChange={(e) => setEditValues({
-                                  ...editValues,
-                                  operatorId: e.target.value
-                                })}
-                                className={`w-full px-2 py-1 text-xs rounded border ${inputBorderClass} ${inputBgClass} ${textClass}`}
-                              >
-                                <option value="">No operator</option>
-                                {users.filter(u => u.role === 'operator').map(user => (
-                                  <option key={user._id} value={user._id}>
-                                    {user.username}
-                                  </option>
-                                ))}
-                              </select>
-                              <div className="flex items-center space-x-1">
-                                <input
-                                  type="checkbox"
-                                  id={`shift-${day.date}-${hour.hour}`}
-                                  checked={editValues.applyToShift}
-                                  onChange={(e) => setEditValues({
-                                    ...editValues,
-                                    applyToShift: e.target.checked
-                                  })}
-                                  className="text-xs"
-                                />
-                                <label 
-                                  htmlFor={`shift-${day.date}-${hour.hour}`}
-                                  className={`text-xs ${textSecondaryClass}`}
-                                >
-                                  Apply to shift
-                                </label>
-                              </div>
-                              <div className="flex space-x-1">
-                                <button
-                                  onClick={handleSaveEdit}
-                                  className="p-1 bg-green-600 text-white rounded text-xs"
-                                >
-                                  <Save className="h-3 w-3" />
-                                </button>
-                                <button
-                                  onClick={() => setEditingCell(null)}
-                                  className="p-1 bg-gray-600 text-white rounded text-xs"
-                                >
-                                  <X className="h-3 w-3" />
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div 
-                              className={`text-xs cursor-pointer hover:bg-gray-100 rounded p-1 flex items-center ${
-                                hour.operator 
-                                  ? isDarkMode ? 'text-blue-400' : 'text-blue-600'
-                                  : isPast 
-                                    ? isDarkMode ? 'text-red-400' : 'text-red-600'
-                                    : textSecondaryClass
-                              }`}
-                              onClick={() => handleCellEdit(day.date, hour.hour, 'operator')}
-                            >
-                              <UserIcon className="h-3 w-3 mr-1" />
-                              {hour.operator ? hour.operator.username : 'No operator'}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Mold Assignment - Editable */}
-                        <div className="mb-2">
-                          {editingCell?.date === day.date && 
-                           editingCell?.hour === hour.hour && 
-                           editingCell?.field === 'mold' ? (
-                            <div className="space-y-1">
-                              <select
-                                value={editValues.moldId}
-                                onChange={(e) => setEditValues({
-                                  ...editValues,
-                                  moldId: e.target.value
-                                })}
-                                className={`w-full px-2 py-1 text-xs rounded border ${inputBorderClass} ${inputBgClass} ${textClass}`}
-                              >
-                                <option value="">No mold</option>
-                                {molds.map(mold => (
-                                  <option key={mold._id} value={mold._id}>
-                                    {mold.name}
-                                  </option>
-                                ))}
-                              </select>
-                              <div className="flex items-center space-x-1">
-                                <input
-                                  type="checkbox"
-                                  id={`mold-shift-${day.date}-${hour.hour}`}
-                                  checked={editValues.applyToShift}
-                                  onChange={(e) => setEditValues({
-                                    ...editValues,
-                                    applyToShift: e.target.checked
-                                  })}
-                                  className="text-xs"
-                                />
-                                <label 
-                                  htmlFor={`mold-shift-${day.date}-${hour.hour}`}
-                                  className={`text-xs ${textSecondaryClass}`}
-                                >
-                                  Apply to shift
-                                </label>
-                              </div>
-                              <div className="flex space-x-1">
-                                <button
-                                  onClick={handleSaveEdit}
-                                  className="p-1 bg-green-600 text-white rounded text-xs"
-                                >
-                                  <Save className="h-3 w-3" />
-                                </button>
-                                <button
-                                  onClick={() => setEditingCell(null)}
-                                  className="p-1 bg-gray-600 text-white rounded text-xs"
-                                >
-                                  <X className="h-3 w-3" />
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div 
-                              className={`text-xs cursor-pointer hover:bg-gray-100 rounded p-1 flex items-center ${
-                                hour.mold 
-                                  ? isDarkMode ? 'text-green-400' : 'text-green-600'
-                                  : isPast 
-                                    ? isDarkMode ? 'text-red-400' : 'text-red-600'
-                                    : textSecondaryClass
-                              }`}
-                              onClick={() => handleCellEdit(day.date, hour.hour, 'mold')}
-                            >
-                              <Package className="h-3 w-3 mr-1" />
-                              {hour.mold ? hour.mold.name : 'No mold'}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Stoppages */}
-                        {hour.stoppages && hour.stoppages.length > 0 && (
-                          <div className="space-y-1">
-                            {hour.stoppages.map((stoppage, idx) => (
-                              <div
-                                key={idx}
-                                className={`text-xs p-1 rounded flex items-center ${
-                                  stoppage.reason === 'unclassified'
-                                    ? isDarkMode ? 'bg-red-900/50 text-red-400' : 'bg-red-100 text-red-800'
-                                    : isDarkMode ? 'bg-yellow-900/50 text-yellow-400' : 'bg-yellow-100 text-yellow-800'
-                                }`}
-                              >
-                                <AlertTriangle className="h-3 w-3 mr-1" />
-                                <span className="truncate">
-                                  {stoppage.reason === 'unclassified' ? 'Needs classification' : stoppage.reason}
-                                  {stoppage.duration && ` (${stoppage.duration}m)`}
-                                </span>
-                                {stoppage.reason === 'unclassified' && (
-                                  <button
-                                    onClick={() => setShowStoppageModal({
-                                      date: day.date,
-                                      hour: hour.hour,
-                                      pendingStoppageId: stoppage._id
-                                    })}
-                                    className="ml-1 p-0.5 bg-red-600 text-white rounded"
-                                  >
-                                    <Edit className="h-2 w-2" />
-                                  </button>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* Add Stoppage Button */}
-                        <button
-                          onClick={() => setShowStoppageModal({
-                            date: day.date,
-                            hour: hour.hour
-                          })}
-                          className={`mt-2 w-full text-xs py-1 rounded border border-dashed transition-colors ${
-                            isDarkMode 
-                              ? 'border-gray-600 text-gray-400 hover:border-gray-500 hover:text-gray-300' 
-                              : 'border-gray-300 text-gray-600 hover:border-gray-400 hover:text-gray-700'
-                          }`}
-                        >
-                          <Plus className="h-3 w-3 mx-auto" />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+      {/* Compact Horizontal Timeline */}
+      <div className={`rounded-lg border p-4 ${cardBgClass} ${cardBorderClass}`}>
+        {/* Time Labels */}
+        <div className={`flex mb-2 text-xs ${textSecondaryClass}`}>
+          {currentDay.hours.map((hour) => (
+            <div key={hour.hour} className="flex-1 text-center min-w-0">
+              {formatTime(hour.hour)}
             </div>
           ))}
         </div>
-      </div>
 
-      {/* Stoppage Modal */}
-      {showStoppageModal && (
-        <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 p-4">
-          <div className={`rounded-lg border w-full max-w-md ${cardBgClass} ${cardBorderClass}`}>
-            <div className={`p-6 border-b ${cardBorderClass}`}>
-              <div className="flex items-center justify-between">
-                <h3 className={`text-lg font-semibold ${textClass}`}>
-                  {showStoppageModal.pendingStoppageId ? 'Classify Stoppage' : 'Add Stoppage'}
-                </h3>
-                <button 
-                  onClick={() => setShowStoppageModal(null)}
-                  className={textSecondaryClass}
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-            </div>
+        {/* Production Blocks */}
+        <div className="flex gap-1 mb-3">
+          {currentDay.hours.map((hour) => {
+            const hasUnclassifiedStoppage = hour.stoppages.some(s => s.reason === 'unclassified');
             
-            <div className="p-6 space-y-4">
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Reason *
-                </label>
-                <select
-                  value={stoppageForm.reason}
-                  onChange={(e) => setStoppageForm({
-                    ...stoppageForm,
-                    reason: e.target.value,
-                    sapNotificationNumber: e.target.value === 'breakdown' ? stoppageForm.sapNotificationNumber : ''
-                  })}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  required
-                >
-                  <option value="">Select reason</option>
-                  <option value="planned">Planned Maintenance</option>
-                  <option value="mold_change">Mold Change</option>
-                  <option value="breakdown">Breakdown</option>
-                  <option value="maintenance">Unplanned Maintenance</option>
-                  <option value="material_shortage">Material Shortage</option>
-                  <option value="other">Other</option>
-                </select>
-              </div>
+            return (
+              <div
+                key={hour.hour}
+                className="flex-1 relative group cursor-pointer min-w-0"
+                onClick={() => setSelectedHour({ hour, date: currentDay.date })}
+              >
+                <div className={`h-12 rounded transition-all duration-200 group-hover:scale-105 border relative overflow-hidden ${
+                  hasUnclassifiedStoppage ? isDarkMode ? 'border-red-500 border-2' : 'border-red-500 border-2' : `${cardBorderClass}`
+                }`}>
+                  {(() => {
+                    const runningMinutes = hour.runningMinutes || 0;
+                    const stoppageMinutes = hour.stoppageMinutes || 0;
+                    const inactiveMinutes = 60 - runningMinutes - stoppageMinutes;
+                    
+                    return (
+                      <>
+                        <div
+                          className="bg-green-500" 
+                          style={{ 
+                            width: `${((runningMinutes || 0) / 60) * 100}%`,
+                            height: '100%',
+                            position: 'absolute',
+                            left: 0,
+                            top: 0,
+                            opacity: 0.8
+                          }}
+                        />
+                        
+                        <div
+                          className={`${hasUnclassifiedStoppage ? 'bg-red-600 animate-pulse' : 'bg-red-500'}`}
+                          style={{ 
+                            width: `${((stoppageMinutes || 0) / 60) * 100}%`,
+                            height: '100%',
+                            position: 'absolute',
+                            left: `${((runningMinutes || 0) / 60) * 100}%`,
+                            top: 0,
+                            opacity: hasUnclassifiedStoppage ? 1 : 0.8
+                          }}
+                        />
+                        
+                        <div
+                          className="bg-gray-500" 
+                          style={{ 
+                            width: `${((inactiveMinutes || 0) / 60) * 100}%`,
+                            height: '100%',
+                            position: 'absolute',
+                            left: `${((runningMinutes + stoppageMinutes) / 60) * 100}%`,
+                            top: 0,
+                            opacity: 0.4
+                          }}
+                        />
+                      </>
+                    );
+                  })()}
+                  
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className={`text-xs font-bold text-white bg-black bg-opacity-60 px-1 rounded`}>
+                      {hour.unitsProduced}
+                    </span>
+                  </div>
 
-              {stoppageForm.reason === 'breakdown' && (
-                <div>
-                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                    SAP Notification Number *
-                  </label>
-                  <input
-                    type="text"
-                    value={stoppageForm.sapNotificationNumber}
-                    onChange={(e) => setStoppageForm({
-                      ...stoppageForm,
-                      sapNotificationNumber: e.target.value
-                    })}
-                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                    placeholder="Enter SAP notification number"
-                    required
-                  />
+                  <div className="absolute top-0 left-0 right-0 flex justify-between p-0.5">
+                    {hour.operator && (
+                      <div className="w-2 h-2 bg-blue-400 rounded-full" title="Operator assigned" />
+                    )}
+                    
+                    {hour.defectiveUnits > 0 && (
+                      <div className="w-2 h-2 bg-red-400 rounded-full" title={`${hour.defectiveUnits} defects`} />
+                    )}
+                  </div>
+
+                  <div className="absolute bottom-0 left-0 right-0 flex justify-between p-0.5">
+                    {hour.mold && (
+                      <div className="w-2 h-2 bg-purple-400 rounded-full" title="Mold assigned" />
+                    )}
+                    
+                    {hour.stoppages.length > 0 && (
+                      <div className={`w-2 h-2 rounded-full ${
+                        hasUnclassifiedStoppage ? 'bg-red-600 animate-pulse' : 'bg-red-600'
+                      }`} title={`${hour.stoppages.length} stoppages`} />
+                    )}
+                  </div>
+
+                  {hasUnclassifiedStoppage && (
+                    <div className={`absolute inset-0 animate-pulse border-2 rounded ${
+                      isDarkMode ? 'bg-red-600 bg-opacity-20 border-red-500' : 'bg-red-200 border-red-500'
+                    }`}>
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <AlertTriangle className={`h-4 w-4 animate-bounce ${isDarkMode ? 'text-red-400' : 'text-red-600'}`} />
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
-              
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                  Description
-                </label>
-                <textarea
-                  value={stoppageForm.description}
-                  onChange={(e) => setStoppageForm({
-                    ...stoppageForm,
-                    description: e.target.value
-                  })}
-                  className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                  rows={3}
-                  placeholder="Enter stoppage description"
-                />
-              </div>
 
-              {!showStoppageModal.pendingStoppageId && (
-                <div>
-                  <label className={`block text-sm font-medium mb-1 ${textSecondaryClass}`}>
-                    Duration (minutes) *
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="60"
-                    value={stoppageForm.duration}
-                    onChange={(e) => setStoppageForm({
-                      ...stoppageForm,
-                      duration: parseInt(e.target.value) || 0
-                    })}
-                    className={`w-full px-3 py-2 ${inputBgClass} border ${inputBorderClass} rounded-md ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                    required
-                  />
+                <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
+                  <div className={`rounded-lg px-3 py-2 whitespace-nowrap border shadow-lg ${
+                    isDarkMode ? 'bg-gray-900 text-white border-gray-600' : 'bg-white text-gray-900 border-gray-200'
+                  }`}>
+                    <div className="font-medium">{formatTime(hour.hour)}</div>
+                    <div>Units: <span className={`${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>{hour.unitsProduced}</span></div>
+                    {hour.defectiveUnits > 0 && (
+                      <div>Defects: <span className={`${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>{hour.defectiveUnits}</span></div>
+                    )}
+                    <div>Running: <span className={`${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>{hour.runningMinutes || 0}m</span></div>
+                    <div>Stoppage: <span className={`${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>{hour.stoppageMinutes || 0}m</span></div>
+                    <div>Inactive: <span className={textSecondaryClass}>{60 - (hour.runningMinutes || 0) - (hour.stoppageMinutes || 0)}m</span></div>
+                    {hour.operator && (
+                      <div>Op: <span className={`${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>{hour.operator.username}</span></div>
+                    )}
+                    {hour.mold && (
+                      <div>Mold: <span className={`${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`}>{hour.mold.name}</span></div>
+                    )}
+                    <div>Status: <span className="capitalize">{hour.status.replace('_', ' ')}</span></div>
+                    {hour.stoppages.length > 0 && (
+                      <div className="mt-1">
+                        {hour.stoppages.map((stoppage, idx) => (
+                          <div key={idx} className={`${isDarkMode ? 'text-red-300' : 'text-red-600'}`}>
+                            {stoppage.reason === 'unclassified' ? 'Unclassified' : stoppage.reason}: 
+                            {stoppage.duration} min
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              )}
-
-              <div className="flex justify-end space-x-3 pt-4">
-                <button
-                  onClick={() => setShowStoppageModal(null)}
-                  className={`px-4 py-2 border ${buttonSecondaryClass} rounded-md`}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleAddStoppage}
-                  disabled={!stoppageForm.reason || (stoppageForm.reason === 'breakdown' && !stoppageForm.sapNotificationNumber)}
-                  className={`px-4 py-2 ${buttonPrimaryClass} text-white rounded-md disabled:opacity-50`}
-                >
-                  {showStoppageModal.pendingStoppageId ? 'Classify' : 'Add'} Stoppage
-                </button>
               </div>
+            );
+          })}
+        </div>
+
+        {/* Summary Stats */}
+        <div className={`grid grid-cols-4 gap-4 pt-3 border-t ${cardBorderClass}`}>
+          <div className="text-center">
+            <div className={`text-lg font-bold ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
+              {currentDay.hours.reduce((sum, h) => sum + h.unitsProduced, 0)}
             </div>
+            <div className={`text-xs ${textSecondaryClass}`}>Total Units</div>
+          </div>
+          <div className="text-center">
+            <div className={`text-lg font-bold ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
+              {currentDay.hours.reduce((sum, h) => sum + h.defectiveUnits, 0)}
+            </div>
+            <div className={`text-xs ${textSecondaryClass}`}>Defects</div>
+          </div>
+          <div className="text-center">
+            <div className={`text-lg font-bold ${isDarkMode ? 'text-yellow-400' : 'text-amber-600'}`}>
+              {Math.round(currentDay.hours.reduce((sum, h) => sum + (h.runningMinutes || 0), 0) / 60 * 10) / 10}h
+            </div>
+            <div className={`text-xs ${textSecondaryClass}`}>Running</div>
+          </div>
+          <div className="text-center">
+            <div className={`text-lg font-bold ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+              {currentDay.hours.reduce((sum, h) => sum + h.stoppages.length, 0)}
+            </div>
+            <div className={`text-xs ${textSecondaryClass}`}>Stoppages</div>
           </div>
         </div>
+      </div>
+
+      {/* Week/Month Overview */}
+      {timeframe !== 'today' && data.length > 1 && (
+        <div className={`rounded-lg border p-4 ${cardBgClass} ${cardBorderClass}`}>
+          <h4 className={`text-sm font-medium ${textClass} mb-3`}>
+            {timeframe === 'week' ? 'Week' : 'Month'} Overview
+          </h4>
+          <div className="space-y-2">
+            {data.map((day, index) => (
+              <div 
+                key={day.date} 
+                className={`flex items-center justify-between p-2 rounded cursor-pointer transition-colors ${
+                  index === selectedDayIndex 
+                    ? isDarkMode 
+                      ? 'bg-blue-600/20 border border-blue-500/30' 
+                      : 'bg-blue-100 border border-blue-300'
+                    : isDarkMode 
+                      ? 'hover:bg-gray-700' 
+                      : 'hover:bg-gray-100'
+                }`}
+                onClick={() => setSelectedDayIndex(index)}
+              >
+                <div className={`text-sm ${textClass}`}>
+                  {format(parseISO(day.date), 'MMM dd')}
+                  {isToday(parseISO(day.date)) && (
+                    <span className={`ml-2 text-xs px-2 py-0.5 rounded ${
+                      isDarkMode ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-800'
+                    }`}>Today</span>
+                  )}
+                </div>
+                <div className="flex items-center space-x-4 text-xs">
+                  <span className={isDarkMode ? 'text-green-400' : 'text-green-600'}>
+                    {day.hours.reduce((sum, h) => sum + h.unitsProduced, 0)} units
+                  </span>
+                  <span className={isDarkMode ? 'text-red-400' : 'text-red-600'}>
+                    {day.hours.reduce((sum, h) => sum + h.defectiveUnits, 0)} defects
+                  </span>
+                  <span className={isDarkMode ? 'text-yellow-400' : 'text-amber-600'}>
+                    {Math.round(day.hours.reduce((sum, h) => sum + (h.runningMinutes || 0), 0) / 60 * 10) / 10}h running
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Production Modal */}
+      {selectedHour && (
+        <ProductionModal
+          key={`${selectedHour.date}-${selectedHour.hour.hour}`}
+          isOpen={true}
+          onClose={() => setSelectedHour(null)}
+          hour={selectedHour.hour}
+          date={selectedHour.date}
+          machineId={machineId}
+          onAddStoppage={onAddStoppage}
+          onUpdateProduction={onUpdateProduction}
+          availableOperators={availableOperators}
+          availableMolds={availableMolds}
+          shifts={shifts}
+        />
       )}
     </div>
   );
