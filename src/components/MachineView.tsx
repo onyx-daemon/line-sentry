@@ -5,12 +5,11 @@ import apiService from '../services/api';
 import socketService from '../services/socket';
 import ProductionTimeline from './ProductionTimeline';
 import { ToastContainer, toast } from 'react-toastify';
-import { format } from 'date-fns';
+import { format, startOfYear, startOfMonth, startOfWeek, startOfDay } from 'date-fns';
 import 'react-toastify/dist/ReactToastify.css';
 import {
   ArrowLeft,
   Activity,
-  TrendingUp,
   AlertTriangle,
   Clock,
   Gauge,
@@ -19,6 +18,7 @@ import {
   Edit,
   Info,
   ChevronDown,
+  Calendar,
 } from 'lucide-react';
 import { ThemeContext } from '../App';
 
@@ -29,8 +29,11 @@ const MachineView: React.FC = () => {
   const [machine, setMachine] = useState<Machine | null>(null);
   const [timeline, setTimeline] = useState<ProductionTimelineDay[]>([]);
   const [stats, setStats] = useState<MachineStats | null>(null);
+  const [ytdStats, setYtdStats] = useState<MachineStats | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedPeriod, setSelectedPeriod] = useState('24h');
+  const [selectedPeriod, setSelectedPeriod] = useState<'today' | 'week' | 'month' | 'year' | 'custom'>('today');
+  const [customStartDate, setCustomStartDate] = useState<string>('');
+  const [customEndDate, setCustomEndDate] = useState<string>('');
   const [machineStatus, setMachineStatus] = useState<string>('inactive');
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -40,7 +43,6 @@ const MachineView: React.FC = () => {
   const [warnings, setWarnings] = useState<string[]>([]);
   const [currentLocalTime, setCurrentLocalTime] = useState(new Date());
   const [showWarnings, setShowWarnings] = useState(false);
-  // Tooltip state
   const [tooltip, setTooltip] = useState<{
     content: string;
     x: number;
@@ -63,7 +65,7 @@ const MachineView: React.FC = () => {
     ? 'border-gray-600 text-gray-300 hover:bg-gray-700' 
     : 'border-gray-300 text-gray-700 hover:bg-gray-100';
 
-  // Handle mouse enter for tooltip
+  // Handle mouse events for tooltip
   const handleMouseEnter = (content: string) => (e: React.MouseEvent) => {
     setTooltip({
       content,
@@ -73,12 +75,10 @@ const MachineView: React.FC = () => {
     });
   };
 
-  // Handle mouse leave for tooltip
   const handleMouseLeave = () => {
     setTooltip(null);
   };
 
-  // Update tooltip position on mouse move
   const handleMouseMove = (e: React.MouseEvent) => {
     if (tooltip) {
       setTooltip({
@@ -86,6 +86,52 @@ const MachineView: React.FC = () => {
         x: e.clientX,
         y: e.clientY
       });
+    }
+  };
+
+  // Helper function to format date as YYYY-MM-DD in local time
+  const formatLocalDate = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Calculate date range based on selected period (local time)
+  const getDateRange = () => {
+    const now = new Date();
+    
+    switch (selectedPeriod) {
+      case 'today':
+        return {
+          startDate: formatLocalDate(startOfDay(now)),
+          endDate: formatLocalDate(now)
+        };
+      case 'week':
+        return {
+          startDate: formatLocalDate(startOfWeek(now)),
+          endDate: formatLocalDate(now)
+        };
+      case 'month':
+        return {
+          startDate: formatLocalDate(startOfMonth(now)),
+          endDate: formatLocalDate(now)
+        };
+      case 'year':
+        return {
+          startDate: formatLocalDate(startOfYear(now)),
+          endDate: formatLocalDate(now)
+        };
+      case 'custom':
+        return {
+          startDate: customStartDate,
+          endDate: customEndDate
+        };
+      default:
+        return {
+          startDate: formatLocalDate(startOfDay(now)),
+          endDate: formatLocalDate(now)
+        };
     }
   };
 
@@ -99,31 +145,29 @@ const MachineView: React.FC = () => {
         socketService.leaveMachine(id);
       }
     };
-  }, [id, selectedPeriod]);
+  }, [id, selectedPeriod, customStartDate, customEndDate]);
 
-  // useEffect for time updates
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentLocalTime(new Date());
-    }, 60000); // Update every minute
+    }, 60000);
     
     return () => clearInterval(timer);
   }, []);
 
-  // useEffect to check assignments
   useEffect(() => {
     if (!timeline.length) return;
     
     const newWarnings: string[] = [];
     const currentLocalHour = currentLocalTime.getHours();
-    const today = format(currentLocalTime, 'yyyy-MM-dd');
+    const today = formatLocalDate(currentLocalTime);
     
-    timeline.forEach(day => {
-      // Only check today's data
-      if (day.date !== today) return;
-      
-      day.hours.forEach(hour => {
-        // Only check current and past hours
+    // Find today's data in timeline
+    const todayData = timeline.find(day => day.date === today);
+    
+    if (todayData) {
+      todayData.hours.forEach(hour => {
+        // Only check hours that have passed
         if (hour.hour > currentLocalHour) return;
         
         if (!hour.operator) {
@@ -133,10 +177,33 @@ const MachineView: React.FC = () => {
           newWarnings.push(`Mold not assigned for ${hour.hour}:00`);
         }
       });
-    });
+    }
     
     setWarnings(newWarnings);
   }, [timeline, currentLocalTime]);
+
+  const fetchYtdStats = async () => {
+      try {
+        const now = new Date();
+        const ytdStart = formatLocalDate(startOfYear(now));
+        const response = await apiService.request(`/analytics/machine-stats/${id}`, {
+          method: 'GET',
+          params: {
+            startDate: ytdStart,
+            endDate: formatLocalDate(now)
+          }
+        });
+        setYtdStats(response);
+      } catch (err) {
+        console.error('Failed to fetch YTD stats:', err);
+      }
+    };
+
+  // Fetch year-to-date stats on component mount
+  useEffect(() => {
+    if (!id) return;
+    fetchYtdStats();
+  }, [id]);
 
   const setupSocketListeners = () => {
     if (!id) return;
@@ -146,31 +213,33 @@ const MachineView: React.FC = () => {
 
     const handleProductionUpdate = (update: any) => {
       if (update.machineId === id) {
-        // Refresh stats when production updates
         fetchStats();
+        fetchYtdStats();
       }
     };
 
     const handleAssignmentUpdated = (update: any) => {
       if (update.machineId === id) {
-        // Optimistically update timeline
-        setTimeline(prev => prev.map(day => {
-          if (day.date !== update.date) return day;
-          return {
-            ...day,
-            hours: day.hours.map(hour => {
-              if (!update.hours.includes(hour.hour)) return hour;
-              return {
-                ...hour,
-                operator: update.operatorId ?? undefined,
-                mold: update.moldId ?? undefined
-              };
-            })
-          };
-        }));
+        setTimeline(prev => {
+          if (!Array.isArray(prev)) return prev;
+
+          return prev.map(day => {
+            if (day.date !== update.date) return day;
+            return {
+              ...day,
+              hours: day.hours.map(hour => {
+                if (!update.hours.includes(hour.hour)) return hour;
+                return {
+                  ...hour,
+                  operator: update.operatorId ?? undefined,
+                  mold: update.moldId ?? undefined
+                };
+              })
+            };
+          })});
         
         fetchStats();
-        // Remove warnings for updated hours
+        fetchYtdStats();
         setWarnings(prev => prev.filter(w => 
           !update.hours.includes(parseInt(w.split(' ')[4]))
         ));
@@ -180,6 +249,7 @@ const MachineView: React.FC = () => {
     const handleStoppageUpdated = (update: any) => {
       if (update.machineId === id) {
         fetchStats();
+        fetchYtdStats();
       }
     };
 
@@ -190,15 +260,14 @@ const MachineView: React.FC = () => {
           autoClose: 5000,
           theme: isDarkMode ? "dark" : "light"
         });
-        // Refresh data
         fetchMachineData();
+        fetchYtdStats();
       }
     };
 
     const handleMachineStateUpdate = (update: any) => {
       if (update.machineId === id) {
         setMachineStatus(update.status);
-        // Update machine object status
         setMachine(prev => prev ? { ...prev, status: update.dbStatus } : null);
       }
     };
@@ -223,10 +292,9 @@ const MachineView: React.FC = () => {
   const fetchMachineData = async () => {
     try {
       setLoading(true);
-      const [machineData, timelineData, statsData] = await Promise.all([
+      const [machineData, timelineData] = await Promise.all([
         apiService.getMachine(id!),
         apiService.getProductionTimeline(id!),
-        apiService.getMachineStats(id!, selectedPeriod)
       ]);
       
       setMachine(machineData);
@@ -234,7 +302,19 @@ const MachineView: React.FC = () => {
         name: machineData.name,
         description: machineData.description || ''
       });
-      setTimeline(timelineData);
+
+      setTimeline(Array.isArray(timelineData) ? timelineData : []);
+      
+      // Fetch stats for selected period
+      const { startDate, endDate } = getDateRange();
+      const statsData = await apiService.request(`/analytics/machine-stats/${id}`, {
+        method: 'GET',
+        params: {
+          startDate,
+          endDate
+        }
+      });
+      
       setStats(statsData);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch machine data';
@@ -246,7 +326,14 @@ const MachineView: React.FC = () => {
 
   const fetchStats = async () => {
     try {
-      const statsData = await apiService.getMachineStats(id!, selectedPeriod);
+      const { startDate, endDate } = getDateRange();
+      const statsData = await apiService.request(`/analytics/machine-stats/${id}`, {
+        method: 'GET',
+        params: {
+          startDate,
+          endDate
+        }
+      });
       setStats(statsData);
     } catch (err) {
       console.error('Failed to fetch stats:', err);
@@ -262,7 +349,7 @@ const MachineView: React.FC = () => {
       toast.success('Stoppage recorded successfully');
       fetchMachineData();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message :'Failed to record stoppage');
+      toast.error(err instanceof Error ? err.message : 'Failed to record stoppage');
     }
   };
 
@@ -278,7 +365,7 @@ const MachineView: React.FC = () => {
       fetchStats();
       fetchMachineData();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message :'Failed to update production data');
+      toast.error(err instanceof Error ? err.message : 'Failed to update production data');
     }
   };
 
@@ -296,7 +383,7 @@ const MachineView: React.FC = () => {
       setIsEditing(false);
       toast.success('Machine details updated');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message :'Failed to update machine');
+      toast.error(err instanceof Error ? err.message : 'Failed to update machine');
     }
   };
 
@@ -310,7 +397,7 @@ const MachineView: React.FC = () => {
     }
   };
 
- const getStatusIcon = (status: MachineStatus) => {
+  const getStatusIcon = (status: MachineStatus) => {
     switch (status) {
       case 'running': return <Zap className="h-4 w-4" />;
       case 'stoppage': return <AlertTriangle className="h-4 w-4" />;
@@ -328,13 +415,16 @@ const MachineView: React.FC = () => {
     );
   }
 
-  if (!machine || !stats) {
+  if (!machine || !stats || !ytdStats) {
     return (
       <div className={`text-center py-12 ${bgClass}`}>
         <p className={textSecondaryClass}>Machine not found</p>
       </div>
     );
   }
+
+  // Convert MTBF to days for YTD display
+  const mtbfDays = ytdStats.mtbf > 0 ? (ytdStats.mtbf / 1440).toFixed(1) : 0;
 
   return (
     <div className={`space-y-6 min-h-screen p-4 ${bgClass}`}>
@@ -468,95 +558,111 @@ const MachineView: React.FC = () => {
         </div>
       )}
 
-      {/* Key Metrics - Compact Layout */}
-      <div className="grid grid-cols-4 gap-2">
+      {/* Key Metrics - Year to Date */}
+      <div className="grid grid-cols-3 gap-2">
         <div 
           className={`p-3 rounded-lg border flex items-center relative ${cardBgClass} ${cardBorderClass}`}
-          onMouseEnter={handleMouseEnter('Total units produced in the selected time period')}
-          onMouseLeave={handleMouseLeave}
-          onMouseMove={handleMouseMove}
-        >
-          <TrendingUp className={`h-6 w-6 mr-3 ${isDarkMode ? 'text-green-400' : 'text-green-500'}`} />
-          <div>
-            <p className={`text-xs flex items-center ${textSecondaryClass}`}>
-              Units
-              <Info className="h-3 w-3 ml-1" />
-            </p>
-            <p className={`text-lg font-semibold ${textClass}`}>{stats.totalUnitsProduced}</p>
-          </div>
-        </div>
-
-        <div 
-          className={`p-3 rounded-lg border flex items-center relative ${cardBgClass} ${cardBorderClass}`}
-          onMouseEnter={handleMouseEnter('Overall Equipment Effectiveness (Availability × Performance × Quality)')}
+          onMouseEnter={handleMouseEnter('Overall Equipment Effectiveness (Year to Date)')}
           onMouseLeave={handleMouseLeave}
           onMouseMove={handleMouseMove}
         >
           <Gauge className={`h-6 w-6 mr-3 ${isDarkMode ? 'text-yellow-400' : 'text-amber-500'}`} />
           <div>
             <p className={`text-xs flex items-center ${textSecondaryClass}`}>
-              OEE
+              OEE (YTD)
               <Info className="h-3 w-3 ml-1" />
             </p>
-            <p className={`text-lg font-semibold ${isDarkMode ? 'text-yellow-400' : 'text-amber-600'}`}>{stats.oee}%</p>
+            <p className={`text-lg font-semibold ${isDarkMode ? 'text-yellow-400' : 'text-amber-600'}`}>
+              {ytdStats.oee}%
+            </p>
           </div>
         </div>
 
         <div 
           className={`p-3 rounded-lg border flex items-center relative ${cardBgClass} ${cardBorderClass}`}
-          onMouseEnter={handleMouseEnter('Mean Time Between Failures (average time between breakdowns)')}
+          onMouseEnter={handleMouseEnter('Mean Time Between Failures in days (Year to Date)')}
           onMouseLeave={handleMouseLeave}
           onMouseMove={handleMouseMove}
         >
           <Clock className={`h-6 w-6 mr-3 ${isDarkMode ? 'text-blue-400' : 'text-blue-500'}`} />
           <div>
             <p className={`text-xs flex items-center ${textSecondaryClass}`}>
-              MTBF
+              MTBF (YTD)
               <Info className="h-3 w-3 ml-1" />
             </p>
-            <p className={`text-lg font-semibold ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>{stats.mtbf}m</p>
+            <p className={`text-lg font-semibold ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+              {mtbfDays} days
+            </p>
           </div>
         </div>
 
         <div 
           className={`p-3 rounded-lg border flex items-center relative ${cardBgClass} ${cardBorderClass}`}
-          onMouseEnter={handleMouseEnter('Mean Time To Repair (average time to repair a breakdown)')}
+          onMouseEnter={handleMouseEnter('Mean Time To Repair in minutes (Year to Date)')}
           onMouseLeave={handleMouseLeave}
           onMouseMove={handleMouseMove}
         >
           <Activity className={`h-6 w-6 mr-3 ${isDarkMode ? 'text-purple-400' : 'text-purple-500'}`} />
           <div>
             <p className={`text-xs flex items-center ${textSecondaryClass}`}>
-              MTTR
+              MTTR (YTD)
               <Info className="h-3 w-3 ml-1" />
             </p>
-            <p className={`text-lg font-semibold ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`}>{stats.mttr}m</p>
+            <p className={`text-lg font-semibold ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`}>
+              {ytdStats.mttr} min
+            </p>
           </div>
         </div>
       </div>
 
       {/* Time Period Selector */}
-      <div className="flex items-center space-x-2">
-        <span className={`text-sm ${textSecondaryClass}`}>Time Period:</span>
-        <div className="flex space-x-1">
+      <div className="flex flex-col md:flex-row md:items-center space-y-2 md:space-y-0 md:space-x-4">
+        <span className={`text-sm ${textSecondaryClass}`}>View Analytics For:</span>
+        <div className="flex flex-wrap gap-2">
           {[
-            { value: '24h', label: '24 Hours' },
-            { value: '7d', label: '7 Days' },
-            { value: '30d', label: '30 Days' }
+            { value: 'today', label: 'Today' },
+            { value: 'week', label: 'This Week' },
+            { value: 'month', label: 'Month to Date' },
+            { value: 'year', label: 'Year to Date' },
+            { value: 'custom', label: 'Custom' }
           ].map((period) => (
             <button
               key={period.value}
-              onClick={() => setSelectedPeriod(period.value)}
-              className={`px-3 py-1 text-sm rounded-md transition-colors ${
+              onClick={() => setSelectedPeriod(period.value as any)}
+              className={`px-3 py-1 text-sm rounded-md transition-colors flex items-center ${
                 selectedPeriod === period.value
                   ? 'bg-blue-600 text-white'
                   : `${buttonSecondaryClass}`
               }`}
             >
+              {period.value === 'custom' && <Calendar className="h-4 w-4 mr-1" />}
               {period.label}
             </button>
           ))}
         </div>
+        
+        {selectedPeriod === 'custom' && (
+          <div className="flex flex-wrap gap-2">
+            <div>
+              <label className={`text-xs ${textSecondaryClass} block mb-1`}>Start Date</label>
+              <input
+                type="date"
+                value={customStartDate}
+                onChange={(e) => setCustomStartDate(e.target.value)}
+                className={`p-2 rounded border ${inputBorderClass} ${inputBgClass}`}
+              />
+            </div>
+            <div>
+              <label className={`text-xs ${textSecondaryClass} block mb-1`}>End Date</label>
+              <input
+                type="date"
+                value={customEndDate}
+                onChange={(e) => setCustomEndDate(e.target.value)}
+                className={`p-2 rounded border ${inputBorderClass} ${inputBgClass}`}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Detailed Metrics */}
@@ -564,6 +670,29 @@ const MachineView: React.FC = () => {
         <div className={`p-6 rounded-lg border ${cardBgClass} ${cardBorderClass}`}>
           <h3 className={`text-lg font-semibold ${textClass} mb-4`}>Performance Metrics</h3>
           <div className="space-y-4">
+            <div 
+              className="flex justify-between items-center relative"
+              onMouseEnter={handleMouseEnter('Overall Equipment Effectiveness (Availability × Performance × Quality)')}
+              onMouseLeave={handleMouseLeave}
+              onMouseMove={handleMouseMove}
+            >
+              <span className={`flex items-center ${textSecondaryClass}`}>
+                OEE
+                <Info className="h-3 w-3 ml-1" />
+              </span>
+              <div className="flex items-center space-x-2">
+                <div className={`w-20 rounded-full h-2 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
+                  <div 
+                    className="bg-purple-500 h-2 rounded-full" 
+                    style={{ width: `${stats.oee}%` }}
+                  ></div>
+                </div>
+                <span className={`font-medium ${textClass}`}>
+                  {stats.oee}%
+                </span>
+              </div>
+            </div>
+           
             <div 
               className="flex justify-between items-center relative"
               onMouseEnter={handleMouseEnter('Percentage of time the machine was available for production')}
@@ -587,27 +716,6 @@ const MachineView: React.FC = () => {
             
             <div 
               className="flex justify-between items-center relative"
-              onMouseEnter={handleMouseEnter('Percentage of units that meet quality standards')}
-              onMouseLeave={handleMouseLeave}
-              onMouseMove={handleMouseMove}
-            >
-              <span className={`flex items-center ${textSecondaryClass}`}>
-                Quality
-                <Info className="h-3 w-3 ml-1" />
-              </span>
-              <div className="flex items-center space-x-2">
-                <div className={`w-20 rounded-full h-2 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
-                  <div 
-                    className="bg-blue-500 h-2 rounded-full" 
-                    style={{ width: `${stats.quality}%` }}
-                  ></div>
-                </div>
-                <span className={`font-medium ${textClass}`}>{stats.quality}%</span>
-              </div>
-            </div>
-            
-            <div 
-              className="flex justify-between items-center relative"
               onMouseEnter={handleMouseEnter('Actual production rate compared to the maximum possible rate')}
               onMouseLeave={handleMouseLeave}
               onMouseMove={handleMouseMove}
@@ -624,6 +732,27 @@ const MachineView: React.FC = () => {
                   ></div>
                 </div>
                 <span className={`font-medium ${textClass}`}>{stats.performance}%</span>
+              </div>
+            </div>
+
+            <div 
+              className="flex justify-between items-center relative"
+              onMouseEnter={handleMouseEnter('Percentage of units that meet quality standards')}
+              onMouseLeave={handleMouseLeave}
+              onMouseMove={handleMouseMove}
+            >
+              <span className={`flex items-center ${textSecondaryClass}`}>
+                Quality
+                <Info className="h-3 w-3 ml-1" />
+              </span>
+              <div className="flex items-center space-x-2">
+                <div className={`w-20 rounded-full h-2 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
+                  <div 
+                    className="bg-blue-500 h-2 rounded-full" 
+                    style={{ width: `${stats.quality}%` }}
+                  ></div>
+                </div>
+                <span className={`font-medium ${textClass}`}>{stats.quality}%</span>
               </div>
             </div>
           </div>
@@ -713,7 +842,8 @@ const MachineView: React.FC = () => {
                 MTBF
                 <Info className="h-3 w-3 ml-1" />
               </span>
-              <span className={`font-medium ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>{stats.mtbf} minutes</span>
+
+              <span className={`font-medium ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>{stats.mtbf > 0 ? (stats.mtbf / 1440).toFixed(1) : 0} days</span>
             </div>
             <div 
               className="flex justify-between items-center relative"
@@ -755,7 +885,6 @@ const MachineView: React.FC = () => {
         </div>
         <div className="p-6">
           <ProductionTimeline 
-            data={timeline} 
             machineId={id!}
             onAddStoppage={handleAddStoppage}
             onUpdateProduction={handleUpdateProduction}

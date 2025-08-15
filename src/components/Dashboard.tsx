@@ -195,7 +195,7 @@ const Dashboard: React.FC = () => {
               <TrendingUp className="h-6 w-6 text-white" />
             </div>
             <div className="ml-4">
-              <p className={`text-sm font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>Avg OEE</p>
+              <p className={`text-sm font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>Avg OEE (YTD)</p>
               <p className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{factoryStats.avgOEE}%</p>
             </div>
           </div>
@@ -275,7 +275,7 @@ const Dashboard: React.FC = () => {
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <span className={`text-sm font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>OEE</span >
+                    <span className={`text-sm font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>OEE (YTD)</span >
                     <div className="flex items-center space-x-2">
                       <Gauge className="h-4 w-4 text-amber-500" />
                       <span className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>

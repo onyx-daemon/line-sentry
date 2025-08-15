@@ -194,26 +194,60 @@ const DepartmentView: React.FC = () => {
 
   const fetchMachineStatsForMachine = async (machineId: string) => {
     try {
-      const stats = await apiService.getMachineStats(machineId, '24h');
+      // Calculate YTD date range
+      const now = new Date();
+      const startDate = new Date(now.getFullYear(), 0, 1); // January 1st of current year
+      const endDate = now;
+
+      const stats = await apiService.getMachineStats(machineId, { 
+        startDate: startDate.toISOString(), 
+        endDate: endDate.toISOString() 
+      });
+      
       setMachineStats(prev => ({
         ...prev,
         [machineId]: stats
       }));
     } catch (error) {
-      console.error(`Failed to fetch stats for machine ${machineId}:`, error);
+      console.error(`Failed to fetch YTD stats for machine ${machineId}:`, error);
     }
   };
 
   const fetchMachineStats = async () => {
     try {
       const stats: {[machineId: string]: MachineStats} = {};
-      for (const machine of machines) {
-        const machineStats = await apiService.getMachineStats(machine._id, '24h');
-        stats[machine._id] = machineStats;
-      }
+      
+      // Calculate YTD date range once
+      const now = new Date();
+      const startDate = new Date(now.getFullYear(), 0, 1); // January 1st
+      const startDateStr = startDate.toISOString();
+      const endDateStr = now.toISOString();
+
+      // Fetch stats for all machines in parallel
+      const statsPromises = machines.map(machine => 
+        apiService.getMachineStats(machine._id, { 
+          startDate: startDateStr, 
+          endDate: endDateStr 
+        })
+          .then(machineStats => ({ machineId: machine._id, machineStats }))
+          .catch(error => {
+            console.error(`Failed to fetch YTD stats for machine ${machine._id}:`, error);
+            return null;
+          })
+      );
+
+      const results = await Promise.all(statsPromises);
+      
+      // Aggregate results
+      results.forEach(result => {
+        if (result) {
+          stats[result.machineId] = result.machineStats;
+        }
+      });
+
       setMachineStats(stats);
     } catch (error) {
-      console.error('Failed to fetch machine stats:', error);
+      console.error('Failed to fetch YTD machine stats:', error);
     }
   };
 
@@ -557,7 +591,7 @@ const DepartmentView: React.FC = () => {
         <div className={`p-4 rounded-lg border ${cardBgClass} ${cardBorderClass}`}>
           <div className="flex items-center justify-between">
             <div>
-              <p className={`text-sm ${textSecondaryClass}`}>Department OEE</p>
+              <p className={`text-sm ${textSecondaryClass}`}>Department OEE (YTD)</p>
               <p className={`text-xl font-semibold ${isDarkMode ? 'text-yellow-400' : 'text-amber-600'}`}>{departmentStats.avgOEE}%</p>
             </div>
             <Gauge className={`h-8 w-8 ${isDarkMode ? 'text-yellow-400' : 'text-amber-500'}`} />
@@ -695,7 +729,7 @@ const DepartmentView: React.FC = () => {
                             className={textSecondaryClass}
                             style={{ fontSize: '0.7rem' }}
                           >
-                            OEE
+                            OEE (YTD)
                           </span>
                           <span 
                             className={`font-medium ${textClass}`}

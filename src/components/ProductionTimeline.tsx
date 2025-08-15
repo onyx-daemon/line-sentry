@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useContext } from 'react';
+import { useState, useEffect, useContext } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { ProductionTimelineDay, ProductionHour, StoppageRecord, User, Mold } from '../types';
-import { format, parseISO, isToday } from 'date-fns';
+import { format, parseISO, isToday, startOfWeek, startOfMonth, endOfWeek, endOfMonth, isSameDay } from 'date-fns';
 import socketService from '../services/socket';
 import apiService from '../services/api';
 import { 
@@ -17,15 +18,18 @@ import {
   ChevronLeft,
   ChevronRight,
   Zap,
-  ZapOff
+  ZapOff,
+  Calendar,
+  CalendarDays
 } from 'lucide-react';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { useAuth } from '../context/AuthContext';
 import { ThemeContext } from '../App';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
 
 interface ProductionTimelineProps {
-  data: ProductionTimelineDay[];
   machineId: string;
   onAddStoppage?: (stoppage: Partial<StoppageRecord>) => void;
   onUpdateProduction?: (machineId: string, hour: number, date: string, data: any) => void;
@@ -43,6 +47,42 @@ interface ProductionModalProps {
   availableMolds?: Mold[];
   shifts: any[];
 }
+
+
+const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+
+// Format date as Pakistan local time (YYYY-MM-DD)
+const formatLocalDate = (date: Date) => {
+  const pakDate = new Date(date.getTime() + PAKISTAN_OFFSET);
+  return [
+    pakDate.getUTCFullYear(),
+    String(pakDate.getUTCMonth() + 1).padStart(2, '0'),
+    String(pakDate.getUTCDate()).padStart(2, '0')
+  ].join('-');
+};
+
+// Get start and end of day in Pakistan time
+const getLocalDayRange = (date: Date) => {
+  const pakTime = date.getTime() + PAKISTAN_OFFSET;
+  const start = new Date(pakTime);
+  start.setUTCHours(0, 0, 0, 0);
+  
+  const end = new Date(pakTime);
+  end.setUTCHours(23, 59, 59, 999);
+  
+  return {
+    start: new Date(start.getTime() - PAKISTAN_OFFSET), // Convert back to local JS date
+    end: new Date(end.getTime() - PAKISTAN_OFFSET) // Convert back to local JS date
+  };
+};
+
+// Helper to display time in Pakistan timezone
+const formatPakistanTime = (date: Date) => {
+  const pakDate = new Date(date.getTime() + PAKISTAN_OFFSET);
+  return `${String(pakDate.getUTCHours()).padStart(2, '0')}:${String(pakDate.getUTCMinutes()).padStart(2, '0')}`;
+};
+
+
 
 const ProductionModal: React.FC<ProductionModalProps> = ({
   isOpen,
@@ -68,10 +108,10 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
   });
   const [assignmentForm, setAssignmentForm] = useState({
     operatorId: currentUser?.role === 'operator' 
-    ? (currentUser._id || '')
-    : (hour.operator?._id || ''),
-  moldId: hour.mold?._id || '',
-  defectiveUnits: hour.defectiveUnits || 0
+      ? (currentUser._id || '')
+      : (hour.operator?._id || ''),
+    moldId: hour.mold?._id || '',
+    defectiveUnits: hour.defectiveUnits || 0
   });
   const [applyToShift, setApplyToShift] = useState(false);
   const [shiftInfo, setShiftInfo] = useState<{name: string; hours: number[]} | null>(null);
@@ -213,8 +253,6 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
       toast.error('Failed to update assignment');
     }
 
-    
-
     socketService.emit('production-assignment-updated', {
       machineId,
       date,
@@ -224,7 +262,6 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
       moldId: moldId,
       defectiveUnits: assignmentForm.defectiveUnits
     });
-
   };
 
   const getStatusColor = (status: string) => {
@@ -252,7 +289,7 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
       <div className={`rounded-lg border w-full max-w-2xl max-h-[90vh] overflow-y-auto ${cardBgClass} ${cardBorderClass}`}>
         <div className={`flex items-center justify-between p-6 border-b ${cardBorderClass}`}>
           <h3 className={`text-lg font-semibold ${textClass}`}>
-            Production Details - {format(parseISO(date), 'MMM dd')}, {hour.hour.toString().padStart(2, '0')}:00
+            Production Details - {format(new Date(date), 'MMM dd')}, {hour.hour.toString().padStart(2, '0')}:00
             {pendingStoppage && (
               <span className={`ml-2 text-sm animate-pulse ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
                 (Unclassified Stoppage - Needs Categorization)
@@ -413,7 +450,7 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
                       <div key={index} className={`rounded-lg p-3 ${
                         stoppage.reason === 'unclassified' || (stoppage as any).isPending 
                           ? isDarkMode 
-                            ? 'bg-red-900/30 border border-red-500 animate-pulse' 
+                            ? 'bg-red-900/20 border border-red-500 animate-pulse' 
                             : 'bg-red-100 border border-red-300 animate-pulse'
                           : isDarkMode 
                             ? 'bg-gray-600' 
@@ -677,16 +714,19 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
   );
 };
 
+
+
 const ProductionTimeline: React.FC<ProductionTimelineProps> = ({ 
-  data: initialData, 
   machineId, 
   onAddStoppage, 
   onUpdateProduction,
 }) => {
   const { isDarkMode } = useContext(ThemeContext);
-  const [data, setData] = useState(initialData);
+  const [data, setData] = useState<ProductionTimelineDay[]>([]);
   const [selectedHour, setSelectedHour] = useState<{ hour: ProductionHour; date: string } | null>(null);
-  const [viewMode, setViewMode] = useState<'day' | 'week' | 'month'>('day');
+  const [timeframe, setTimeframe] = useState<'today' | 'week' | 'month' | 'custom'>('today');
+  const [customStartDate, setCustomStartDate] = useState<Date>(startOfWeek(new Date()));
+  const [customEndDate, setCustomEndDate] = useState<Date>(new Date());
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const [availableOperators, setAvailableOperators] = useState<User[]>([]);
   const [availableMolds, setAvailableMolds] = useState<Mold[]>([]);
@@ -695,6 +735,7 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
   const [machineColor, setMachineColor] = useState<string>('gray');
   const [shifts, setShifts] = useState<any[]>([]);
   const { user: currentUser } = useAuth();
+  const [isLoading, setIsLoading] = useState(false);
 
   // Theme classes
   const bgClass = isDarkMode ? 'bg-gray-900' : 'bg-gray-50';
@@ -711,34 +752,55 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
     ? 'border-gray-600 text-gray-300 hover:bg-gray-700' 
     : 'border-gray-300 text-gray-700 hover:bg-gray-100';
 
-  const fetchOperatorsAndMolds = async () => {
-      try {
-        let operators: User[] = [];
-        if (currentUser?.role === 'admin') {
-          // For admin, fetch all operators
-          operators = await apiService.getUsers();
-        } else {
-          // For operators, fetch only the current operator
-          const operator = await apiService.getCurrentUser();
-          operators = [operator];
-        }
-        
-        // Filter to only operators
-        operators = operators.filter(u => u.role === 'operator');
-        
-        // Fetch molds
-        const molds = await apiService.getMolds();
-        
-        setAvailableOperators(operators);
-        setAvailableMolds(molds);
-        return {operators, molds};
-      } catch (error) {
-        console.error('Failed to fetch operators and molds:', error);
-        return { operators: [], molds: [] };
+  const fetchProductionData = async () => {
+    setIsLoading(true);
+    try {
+      let params: any = { timeframe };
+      
+      if (timeframe === 'custom') {
+        params.startDate = formatLocalDate(customStartDate);
+        params.endDate = formatLocalDate(customEndDate);
       }
+
+      const response = await apiService.getProductionTimeline(machineId, params);
+      setData(response.timeline || []);
+      
+      // Auto-select today when data changes
+      if (response.timeline?.length > 0) {
+        const todayIndex = response.timeline.findIndex((day: any) => isToday(parseISO(day.date)));
+        setSelectedDayIndex(todayIndex >= 0 ? todayIndex : 0);
+      }
+    } catch (error) {
+      console.error('Failed to fetch production data:', error);
+      toast.error('Failed to load production data');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Update current time every minute
+  const fetchOperatorsAndMolds = async () => {
+    try {
+      let operators: User[] = [];
+      if (currentUser?.role === 'admin') {
+        operators = await apiService.getUsers();
+      } else {
+        const operator = await apiService.getCurrentUser();
+        operators = [operator];
+      }
+      
+      operators = operators.filter(u => u.role === 'operator');
+      const molds = await apiService.getMolds();
+      
+      setAvailableOperators(operators);
+      setAvailableMolds(molds);
+      
+      return { operators, molds };
+    } catch (error) {
+      console.error('Failed to fetch operators and molds:', error);
+      return { operators: [], molds: [] };
+    }
+  };
+
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(new Date());
@@ -747,23 +809,14 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Update data when props change
   useEffect(() => {
-    setData(initialData);
-    // Auto-select today when data changes
-    if (initialData.length > 0) {
-      const todayIndex = initialData.findIndex(day => isToday(parseISO(day.date)));
-      if (todayIndex >= 0) {
-        setSelectedDayIndex(todayIndex);
-      }
-    }
-  }, [initialData]);
+    fetchProductionData();
+  }, [timeframe, machineId, customStartDate, customEndDate]);
 
   useEffect(() => {
     fetchOperatorsAndMolds();
   }, [currentUser]);
 
-  // Set up socket listeners for real-time updates
   useEffect(() => {
     socketService.connect();
     socketService.joinMachine(machineId);
@@ -828,7 +881,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
           if (dayIndex >= 0) {
             const hourIndex = newData[dayIndex].hours.findIndex(h => h.hour === stoppage.hour);
             if (hourIndex >= 0) {
-              // Add unclassified stoppage
               const unclassifiedStoppageRecord: StoppageRecord = {
                 _id: stoppage.pendingStoppageId || `unclassified_${Date.now()}`,
                 reason: 'unclassified',
@@ -838,7 +890,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
                 duration: stoppage.duration || 0
               };
 
-              // Check if this unclassified stoppage already exists
               const existingIndex = newData[dayIndex].hours[hourIndex].stoppages.findIndex(
                 s => s._id === stoppage.pendingStoppageId || s.reason === 'unclassified'
               );
@@ -856,7 +907,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
           return newData;
         });
 
-        // Show toast notification
         toast.warning(`Unclassified stoppage detected - requires categorization`, {
           position: "top-right",
           autoClose: 5000,
@@ -867,7 +917,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
 
     const handleStoppageAdded = (stoppage: any) => {
       if (stoppage.machineId === machineId) {
-        // Update the timeline data in real-time
         setData(prevData => {
           const newData = [...prevData];
           const dayIndex = newData.findIndex(day => day.date === stoppage.date);
@@ -875,11 +924,9 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
           if (dayIndex >= 0) {
             const hourIndex = newData[dayIndex].hours.findIndex(h => h.hour === stoppage.hour);
             if (hourIndex >= 0) {
-              // Remove any unclassified stoppages and add the new classified one
               newData[dayIndex].hours[hourIndex].stoppages = 
                 newData[dayIndex].hours[hourIndex].stoppages.filter(s => s.reason !== 'unclassified');
               
-              // Add the new stoppage
               newData[dayIndex].hours[hourIndex].stoppages.push({
                 _id: `stoppage_${Date.now()}`,
                 reason: stoppage.stoppage.reason as any,
@@ -889,7 +936,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
                 duration: stoppage.stoppage.duration
               });
 
-              // Update status based on stoppage reason
               if (stoppage.stoppage.reason === 'breakdown') {
                 newData[dayIndex].hours[hourIndex].status = 'stoppage';
               } else {
@@ -910,65 +956,61 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
     };
 
     const handleProductionAssignmentUpdated = async (update: any) => {
-    if (update.machineId === machineId) {
-      try {
-        // Get fresh operators/molds data
-        const { operators, molds } = await fetchOperatorsAndMolds();
-        
-        setData(prevData => {
-          const newData = [...prevData];
-          const dayIndex = newData.findIndex(day => day.date === update.date);
+      if (update.machineId === machineId) {
+        try {
+          const { operators, molds } = await fetchOperatorsAndMolds();
           
-          if (dayIndex >= 0) {
-            update.hours.forEach((targetHour: number) => {
-              let hourIndex = newData[dayIndex].hours.findIndex(h => h.hour === targetHour);
+          setData(prevData => {
+            const newData = [...prevData];
+            const dayIndex = newData.findIndex(day => day.date === update.date);
+            
+            if (dayIndex >= 0) {
+              update.hours.forEach((targetHour: number) => {
+                let hourIndex = newData[dayIndex].hours.findIndex(h => h.hour === targetHour);
 
-              if (hourIndex === -1) {
-                const newHour: ProductionHour = {
-                  hour: targetHour,
-                  unitsProduced: 0,
-                  defectiveUnits: 0,
-                  status: 'inactive',
-                  operator: undefined,
-                  mold: undefined,
-                  stoppages: [],
-                  runningMinutes: 0,
-                  stoppageMinutes: 0
-                };
-                newData[dayIndex].hours.push(newHour);
-                hourIndex = newData[dayIndex].hours.length - 1;
-              }
+                if (hourIndex === -1) {
+                  const newHour: ProductionHour = {
+                    hour: targetHour,
+                    unitsProduced: 0,
+                    defectiveUnits: 0,
+                    status: 'inactive',
+                    operator: undefined,
+                    mold: undefined,
+                    stoppages: [],
+                    runningMinutes: 0,
+                    stoppageMinutes: 0
+                  };
+                  newData[dayIndex].hours.push(newHour);
+                  hourIndex = newData[dayIndex].hours.length - 1;
+                }
 
-              if (hourIndex >= 0) {
-                // Update operator using fresh data
-                if (update.operatorId !== null) {
-                  const operator = operators.find(op => op._id === update.operatorId);
-                  newData[dayIndex].hours[hourIndex].operator = operator || undefined;
-                } else {
-                  newData[dayIndex].hours[hourIndex].operator = undefined;
+                if (hourIndex >= 0) {
+                  if (update.operatorId !== null) {
+                    const operator = operators.find(op => op._id === update.operatorId);
+                    newData[dayIndex].hours[hourIndex].operator = operator || undefined;
+                  } else {
+                    newData[dayIndex].hours[hourIndex].operator = undefined;
+                  }
+                  
+                  if (update.moldId !== null) {
+                    const mold = molds.find((m: any) => m._id === update.moldId);
+                    newData[dayIndex].hours[hourIndex].mold = mold || undefined;
+                  } else {
+                    newData[dayIndex].hours[hourIndex].mold = undefined;
+                  }
+                  
+                  if (targetHour === update.originalHour && update.defectiveUnits !== undefined) {
+                    newData[dayIndex].hours[hourIndex].defectiveUnits = update.defectiveUnits;
+                  }
                 }
-                
-                // Update mold using fresh data
-                if (update.moldId !== null) {
-                  const mold = molds.find((m: any) => m._id === update.moldId);
-                  newData[dayIndex].hours[hourIndex].mold = mold || undefined;
-                } else {
-                  newData[dayIndex].hours[hourIndex].mold = undefined;
-                }
-                
-                // Update defects only for original hour
-                if (targetHour === update.originalHour && update.defectiveUnits !== undefined) {
-                  newData[dayIndex].hours[hourIndex].defectiveUnits = update.defectiveUnits;
-                }
-              }
-            });
-          }
-          return newData;
-        });
-      } catch (error) {
-        console.error('Failed to update assignment:', error);
+              });
+            }
+            return newData;
+          });
+        } catch (error) {
+          console.error('Failed to update assignment:', error);
+        }
       }
-    }
     };
 
     const handleStoppageUpdated = (update: any) => {
@@ -985,14 +1027,12 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
               );
               
               if (stoppageIndex >= 0) {
-                // Update duration AND startTime
                 newData[dayIndex].hours[hourIndex].stoppages[stoppageIndex] = {
                   ...newData[dayIndex].hours[hourIndex].stoppages[stoppageIndex],
                   duration: update.duration,
                   startTime: new Date(Date.now() - update.duration * 60000).toISOString()
                 };
                 
-                // Update total stoppage minutes
                 newData[dayIndex].hours[hourIndex].stoppageMinutes = 
                   newData[dayIndex].hours[hourIndex].stoppages.reduce(
                     (sum, stoppage) => sum + (stoppage.duration || 0), 0
@@ -1025,78 +1065,52 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
     };
   }, [machineId, availableOperators, availableMolds]);
 
-  // Fetch shifts
   useEffect(() => {
-  const fetchShifts = async () => {
-    try {
+    const fetchShifts = async () => {
+      try {
         const shifts = await apiService.getShifts();
         setShifts(shifts || []);
-    } catch (error) {
-      console.error('Failed to fetch shifts:', error);
+      } catch (error) {
+        console.error('Failed to fetch shifts:', error);
+      }
+    };
+    
+    fetchShifts();
+  }, [currentUser]);
+
+  const handleTimeframeChange = (newTimeframe: 'today' | 'week' | 'month' | 'custom') => {
+    setTimeframe(newTimeframe);
+    if (newTimeframe !== 'custom') {
+      setSelectedDayIndex(0);
     }
   };
-  
-  fetchShifts();
-}, [currentUser]);
 
-  // Filter data based on view mode and current time
-   const getFilteredData = useCallback(() => {
-    const now = new Date();
-    const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    
-    switch (viewMode) {
-      case 'day':
-        return initialData.filter(day => 
-          new Date(day.date).toDateString() === todayUTC.toDateString()
-        );
-        
-      case 'week':
-        const startOfWeek = new Date(todayUTC);
-        startOfWeek.setUTCDate(todayUTC.getUTCDate() - todayUTC.getUTCDay());
-        const endOfWeek = new Date(startOfWeek);
-        endOfWeek.setUTCDate(startOfWeek.getUTCDate() + 6);
-        
-        return initialData.filter(day => {
-          const dayDate = new Date(day.date);
-          return dayDate >= startOfWeek && dayDate <= endOfWeek;
-        });
-        
-      case 'month':
-        const startOfMonth = new Date(Date.UTC(todayUTC.getUTCFullYear(), todayUTC.getUTCMonth(), 1));
-        const endOfMonth = new Date(Date.UTC(todayUTC.getUTCFullYear(), todayUTC.getUTCMonth() + 1, 0));
-        
-        return initialData.filter(day => {
-          const dayDate = new Date(day.date);
-          return dayDate >= startOfMonth && dayDate <= endOfMonth;
-        });
-        
-      default:
-        return initialData;
-    }
-  }, [initialData, viewMode]);
-
-  const filteredData = getFilteredData();
-  const currentDay = filteredData[selectedDayIndex] || filteredData[0];
-
-  const getHourColor = (hour: ProductionHour) => {
-    // Map to the new 4 states
-    let status: string = 'inactive';
-    if (hour.status === 'running') status = 'running';
-    else if (hour.status === 'stoppage') status = 'stoppage';
-    else if (hour.status === 'stopped_yet_producing') status = 'stopped_yet_producing';
-    
-    switch (status) {
-      case 'running': return 'bg-green-500';
-      case 'stoppage': return 'bg-red-600 animate-pulse';
-      case 'stopped_yet_producing': return 'bg-orange-500';
-      case 'inactive': 
-      default: return 'bg-gray-600';
+  const handleCustomDateApply = () => {
+    if (customStartDate && customEndDate) {
+      if (customStartDate > customEndDate) {
+        toast.error('Start date must be before end date');
+        return;
+      }
+      setTimeframe('custom');
+      setSelectedDayIndex(0);
+      fetchProductionData();
     }
   };
 
   const formatTime = (hour: number) => {
     return `${hour.toString().padStart(2, '0')}:00`;
   };
+
+  const currentDay = data[selectedDayIndex] || data[0];
+
+  if (isLoading) {
+    return (
+      <div className="text-center py-8">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+        <p className={`mt-2 ${textSecondaryClass}`}>Loading production data...</p>
+      </div>
+    );
+  }
 
   if (!data || data.length === 0) {
     return (
@@ -1131,32 +1145,66 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
         theme={isDarkMode ? "dark" : "light"}
       />
 
-      {/* View Mode Selector */}
+      {/* Timeframe Selector */}
       <div className="flex items-center justify-between">
         <div className="flex space-x-1">
           {[
-            { value: 'day', label: 'Today' },
-            { value: 'week', label: 'This Week' },
-            { value: 'month', label: 'This Month' }
+            { value: 'today', label: 'Today', icon: Calendar },
+            { value: 'week', label: 'This Week', icon: CalendarDays },
+            { value: 'month', label: 'This Month', icon: CalendarDays },
+            { value: 'custom', label: 'Custom', icon: Calendar }
           ].map((mode) => (
             <button
               key={mode.value}
-              onClick={() => {
-                setViewMode(mode.value as any);
-                setSelectedDayIndex(0);
-              }}
-              className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                viewMode === mode.value
+              onClick={() => handleTimeframeChange(mode.value as any)}
+              className={`px-3 py-1 text-sm rounded-md transition-colors flex items-center space-x-1 ${
+                timeframe === mode.value
                   ? 'bg-blue-600 text-white'
                   : `${buttonSecondaryClass}`
               }`}
             >
-              {mode.label}
+              {mode.icon && <mode.icon className="h-4 w-4" />}
+              <span>{mode.label}</span>
             </button>
           ))}
         </div>
 
-         {/* Machine Status Indicator */}
+        {/* Custom Date Picker (shown only when custom is selected) */}
+        {timeframe === 'custom' && (
+          <div className={`flex items-center space-x-2 px-3 py-1 rounded-md ${isDarkMode ? 'bg-gray-800' : 'bg-gray-100'}`}>
+            <DatePicker
+              selected={customStartDate}
+              onChange={(date: Date | null) => {
+                if (date) setCustomStartDate(date);
+              }}
+              selectsStart
+              startDate={customStartDate}
+              endDate={customEndDate}
+              maxDate={new Date()}
+              className={`text-sm rounded border ${inputBorderClass} ${inputBgClass} px-2 py-1 w-28`}
+            />
+            <DatePicker
+              selected={customEndDate}
+              onChange={(date: Date | null) => {
+                if (date) setCustomEndDate(date);
+              }}
+              selectsEnd
+              startDate={customStartDate}
+              endDate={customEndDate}
+              minDate={customStartDate}
+              maxDate={new Date()}
+              className={`text-sm rounded border ${inputBorderClass} ${inputBgClass} px-2 py-1 w-28`}
+            />
+            <button
+              onClick={handleCustomDateApply}
+              className={`px-2 py-1 text-sm rounded ${buttonPrimaryClass}`}
+            >
+              Apply
+            </button>
+          </div>
+        )}
+
+        {/* Machine Status Indicator */}
         <div className={`flex items-center px-3 py-1 rounded-md ${
           machineColor === 'green'
             ? isDarkMode ? 'bg-green-900/30 text-green-400' : 'bg-green-100 text-green-800' 
@@ -1175,30 +1223,10 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
             {machineStatus.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
           </span>
         </div>
-
-        {/* Legend */}
-        <div className="flex items-center space-x-3 text-xs">
-          <div className="flex items-center space-x-1">
-            <div className="w-2 h-2 bg-green-500 rounded"></div>
-            <span className={textClass}>Running</span>
-          </div>
-          <div className="flex items-center space-x-1">
-            <div className="w-2 h-2 bg-red-600 rounded animate-pulse"></div>
-            <span className={textClass}>Stoppage</span>
-          </div>
-          <div className="flex items-center space-x-1">
-            <div className="w-2 h-2 bg-orange-500 rounded"></div>
-            <span className={textClass}>Stopped Yet Producing</span>
-          </div>
-          <div className="flex items-center space-x-1">
-            <div className="w-2 h-2 bg-gray-500 rounded"></div>
-            <span className={textClass}>Inactive</span>
-          </div>
-        </div>
       </div>
 
       {/* Day Navigation */}
-      {filteredData.length > 1 && (
+      {data.length > 1 && (
         <div className={`flex items-center justify-between rounded-lg p-3 border ${cardBgClass} ${cardBorderClass}`}>
           <button
             onClick={() => setSelectedDayIndex(Math.max(0, selectedDayIndex - 1))}
@@ -1219,8 +1247,8 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
           </div>
           
           <button
-            onClick={() => setSelectedDayIndex(Math.min(filteredData.length - 1, selectedDayIndex + 1))}
-            disabled={selectedDayIndex === filteredData.length - 1}
+            onClick={() => setSelectedDayIndex(Math.min(data.length - 1, selectedDayIndex + 1))}
+            disabled={selectedDayIndex === data.length - 1}
             className={`p-1 ${textSecondaryClass} hover:${textClass} disabled:opacity-50 disabled:cursor-not-allowed`}
           >
             <ChevronRight className="h-5 w-5" />
@@ -1250,11 +1278,9 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
                 className="flex-1 relative group cursor-pointer min-w-0"
                 onClick={() => setSelectedHour({ hour, date: currentDay.date })}
               >
-                {/* Main production block with time-based visualization */}
                 <div className={`h-12 rounded transition-all duration-200 group-hover:scale-105 border relative overflow-hidden ${
                   hasUnclassifiedStoppage ? isDarkMode ? 'border-red-500 border-2' : 'border-red-500 border-2' : `${cardBorderClass}`
                 }`}>
-                  {/* Time-based visualization with proper inactive time */}
                   {(() => {
                     const runningMinutes = hour.runningMinutes || 0;
                     const stoppageMinutes = hour.stoppageMinutes || 0;
@@ -1262,7 +1288,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
                     
                     return (
                       <>
-                        {/* Running time visualization */}
                         <div
                           className="bg-green-500" 
                           style={{ 
@@ -1275,7 +1300,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
                           }}
                         />
                         
-                        {/* Stoppage time visualization */}
                         <div
                           className={`${hasUnclassifiedStoppage ? 'bg-red-600 animate-pulse' : 'bg-red-500'}`}
                           style={{ 
@@ -1288,7 +1312,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
                           }}
                         />
                         
-                        {/* Inactive time (gray) */}
                         <div
                           className="bg-gray-500" 
                           style={{ 
@@ -1304,34 +1327,27 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
                     );
                   })()}
                   
-                  {/* Units produced */} 
                   <div className="absolute inset-0 flex items-center justify-center">
                     <span className={`text-xs font-bold text-white bg-black bg-opacity-60 px-1 rounded`}>
                       {hour.unitsProduced}
                     </span>
                   </div>
 
-                  {/* Status indicators */}
                   <div className="absolute top-0 left-0 right-0 flex justify-between p-0.5">
-                    {/* Operator indicator */}
                     {hour.operator && (
                       <div className="w-2 h-2 bg-blue-400 rounded-full" title="Operator assigned" />
                     )}
                     
-                    {/* Defects indicator */}
                     {hour.defectiveUnits > 0 && (
                       <div className="w-2 h-2 bg-red-400 rounded-full" title={`${hour.defectiveUnits} defects`} />
                     )}
                   </div>
 
-                  {/* Bottom indicators */}
                   <div className="absolute bottom-0 left-0 right-0 flex justify-between p-0.5">
-                    {/* Mold indicator */}
                     {hour.mold && (
                       <div className="w-2 h-2 bg-purple-400 rounded-full" title="Mold assigned" />
                     )}
                     
-                    {/* Stoppage indicator */}
                     {hour.stoppages.length > 0 && (
                       <div className={`w-2 h-2 rounded-full ${
                         hasUnclassifiedStoppage ? 'bg-red-600 animate-pulse' : 'bg-red-600'
@@ -1339,7 +1355,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
                     )}
                   </div>
 
-                  {/* Unclassified stoppage overlay */}
                   {hasUnclassifiedStoppage && (
                     <div className={`absolute inset-0 animate-pulse border-2 rounded ${
                       isDarkMode ? 'bg-red-600 bg-opacity-20 border-red-500' : 'bg-red-200 border-red-500'
@@ -1351,7 +1366,6 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
                   )}
                 </div>
 
-                {/* Hover tooltip */}
                 <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
                   <div className={`rounded-lg px-3 py-2 whitespace-nowrap border shadow-lg ${
                     isDarkMode ? 'bg-gray-900 text-white border-gray-600' : 'bg-white text-gray-900 border-gray-200'
@@ -1418,13 +1432,13 @@ const ProductionTimeline: React.FC<ProductionTimelineProps> = ({
       </div>
 
       {/* Week/Month Overview */}
-      {viewMode !== 'day' && filteredData.length > 1 && (
+      {timeframe !== 'today' && data.length > 1 && (
         <div className={`rounded-lg border p-4 ${cardBgClass} ${cardBorderClass}`}>
           <h4 className={`text-sm font-medium ${textClass} mb-3`}>
-            {viewMode === 'week' ? 'Week' : 'Month'} Overview
+            {timeframe === 'week' ? 'Week' : 'Month'} Overview
           </h4>
           <div className="space-y-2">
-            {filteredData.map((day, index) => (
+            {data.map((day, index) => (
               <div 
                 key={day.date} 
                 className={`flex items-center justify-between p-2 rounded cursor-pointer transition-colors ${

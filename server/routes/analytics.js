@@ -15,17 +15,91 @@ const PERIODS = {
   '30d': 30 * 24 * 60 * 60 * 1000
 };
 
-// Machine stats calculation
-async function calculateMachineStats(machineId, period) {
-  const now = Date.now();
-  const startDate = new Date(now - PERIODS[period]);
-  const endDate = new Date(now);
+// Helper function to get date range based on timeframe
+function getDateRange(timeframe) {
+  const now = new Date();
+  const startDate = new Date(now);
+  
+  // Pakistan is UTC+5
+  const PAKISTAN_OFFSET = 5 * 60 * 60 * 1000;
+  
+  switch(timeframe) {
+    case 'today':
+      startDate.setHours(0, 0, 0, 0);
+      return { 
+        startDate: new Date(startDate.getTime() + PAKISTAN_OFFSET),
+        endDate: new Date(now.getTime() + PAKISTAN_OFFSET)
+      };
+    case 'week':
+      // Get start of week (Sunday)
+      startDate.setDate(startDate.getDate() - startDate.getDay());
+      startDate.setHours(0, 0, 0, 0);
+      return { 
+        startDate: new Date(startDate.getTime() + PAKISTAN_OFFSET),
+        endDate: new Date(now.getTime() + PAKISTAN_OFFSET)
+      };
+    case 'month':
+      startDate.setDate(1);
+      startDate.setHours(0, 0, 0, 0);
+      return { 
+        startDate: new Date(startDate.getTime() + PAKISTAN_OFFSET),
+        endDate: new Date(now.getTime() + PAKISTAN_OFFSET)
+      };
+    case 'custom':
+      // For custom, we'll expect explicit start/end dates
+      return null;
+    default:
+      // Default to last 7 days
+      startDate.setDate(startDate.getDate() - 7);
+      return { 
+        startDate: new Date(startDate.getTime() + PAKISTAN_OFFSET),
+        endDate: new Date(now.getTime() + PAKISTAN_OFFSET)
+      };
+  }
+}
 
+// Helper function to format date as YYYY-MM-DD in local time
+function formatLocalDate(date) {
+  // Adjust to local timezone before formatting
+  const adjustedDate = new Date(date.getTime() + (date.getTimezoneOffset() * 60000));
+  return adjustedDate.toISOString().split('T')[0];
+}
+
+// Helper function to get start and end of day in local time
+function getLocalDayRange(date) {
+  // Convert input date to local time
+  const localDate = new Date(date);
+  const localOffset = localDate.getTimezoneOffset() * 60000;
+  const localTime = localDate.getTime() - localOffset;
+  
+  const start = new Date(localTime);
+  start.setHours(0, 0, 0, 0);
+  
+  const end = new Date(localTime);
+  end.setHours(23, 59, 59, 999);
+  
+  return { start, end };
+}
+
+
+
+// Machine stats calculation with custom timeframe
+async function calculateMachineStats(machineId, startDate, endDate) {
+  // Convert dates to local time start/end of day
+  const localStart = new Date(startDate);
+  localStart.setHours(0, 0, 0, 0);
+  
+  const localEnd = new Date(endDate);
+  localEnd.setHours(23, 59, 59, 999);
+  
   const aggregation = await ProductionRecord.aggregate([
     {
       $match: {
         machineId: new mongoose.Types.ObjectId(machineId),
-        startTime: { $gte: startDate, $lte: endDate }
+        startTime: { 
+          $gte: new Date(localStart.getTime() + (localStart.getTimezoneOffset() * 60000)),
+          $lte: new Date(localEnd.getTime() + (localEnd.getTimezoneOffset() * 60000))
+        }
       }
     },
     {
@@ -47,14 +121,11 @@ async function calculateMachineStats(machineId, period) {
     {
       $group: {
         _id: null,
-        // Calculate from hourly data, not top-level
         totalUnitsProduced: { $sum: "$hourlyData.unitsProduced" },
         totalDefectiveUnits: { $sum: "$hourlyData.defectiveUnits" },
         totalRunningMinutes: { $sum: "$hourlyData.runningMinutes" },
         totalStoppageMinutes: { $sum: "$hourlyData.stoppageMinutes" },
-        // Use $sum with $size for accurate count
         totalStoppages: { $sum: { $size: "$hourlyData.stoppages" } },
-        //  breakdown calculation
         breakdownStoppages: {
           $sum: {
             $size: {
@@ -83,7 +154,6 @@ async function calculateMachineStats(machineId, period) {
             }
           }
         },
-        // Calculate expected units in aggregation
         totalExpectedUnits: {
           $sum: {
             $cond: [
@@ -131,7 +201,6 @@ async function calculateMachineStats(machineId, period) {
     ? (stats.totalUnitsProduced - stats.totalDefectiveUnits) / stats.totalUnitsProduced
     : 0;
   
-  // Use aggregated totalExpectedUnits
   const performance = stats.totalExpectedUnits > 0 
     ? stats.totalUnitsProduced / stats.totalExpectedUnits
     : 0;
@@ -163,13 +232,44 @@ async function calculateMachineStats(machineId, period) {
   };
 }
 
-// Get production timeline for a machine (7 days)
+// Get production timeline for a machine with custom timeframe support
 router.get('/production-timeline/:machineId', auth, async (req, res) => {
   try {
     const { machineId } = req.params;
-    const endDate = new Date();
-    const startDate = new Date(endDate);
-    startDate.setDate(startDate.getDate() - 7);
+    const { timeframe, startDate: startDateParam, endDate: endDateParam } = req.query;
+
+    // Determine date range based on timeframe
+    let startDate, endDate;
+    if (timeframe === 'custom' && startDateParam && endDateParam) {
+      // For custom dates, we need to adjust to local time
+      const start = new Date(startDateParam);
+      const end = new Date(endDateParam);
+      
+      // Adjust to local timezone
+      const startOffset = start.getTimezoneOffset() * 60000;
+      const endOffset = end.getTimezoneOffset() * 60000;
+      
+      startDate = new Date(start.getTime() + startOffset);
+      endDate = new Date(end.getTime() + endOffset);
+    } else {
+      const range = getDateRange(timeframe);
+      if (!range) {
+        return res.status(400).json({ message: 'Invalid timeframe or missing dates' });
+      }
+      startDate = range.startDate;
+      endDate = range.endDate;
+    }
+
+    // Validate dates
+    if (isNaN(startDate.getTime())) {
+      return res.status(400).json({ message: 'Invalid start date' });
+    }
+    if (isNaN(endDate.getTime())) {
+      return res.status(400).json({ message: 'Invalid end date' });
+    }
+    if (startDate > endDate) {
+      return res.status(400).json({ message: 'Start date must be before end date' });
+    }
 
     // Check access permissions
     const machine = await Machine.findById(machineId).populate('departmentId').lean();
@@ -181,12 +281,21 @@ router.get('/production-timeline/:machineId', auth, async (req, res) => {
       return res.status(403).json({ message: 'Access denied to this machine' });
     }
 
+    // Generate all dates in the range for the timeline
+    const allDates = [];
+    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+      allDates.push(new Date(d));
+    }
+
     // Use aggregation pipeline for better performance
     const productionRecords = await ProductionRecord.aggregate([
       {
         $match: {
           machineId: new mongoose.Types.ObjectId(machineId),
-          startTime: { $gte: startDate, $lte: endDate }
+          startTime: { 
+            $gte: new Date(startDate.getTime() - (startDate.getTimezoneOffset() * 60000)),
+            $lte: new Date(endDate.getTime() - (endDate.getTimezoneOffset() * 60000))
+          }
         }
       },
       {
@@ -264,23 +373,19 @@ router.get('/production-timeline/:machineId', auth, async (req, res) => {
       }
     ]);
 
-    // Generate timeline data for the last 7 days
-    const timeline = [];
-    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-      const dayStart = new Date(d);
-      dayStart.setUTCHours(0, 0, 0, 0);
-      const dayEnd = new Date(dayStart);
-      dayEnd.setUTCDate(dayStart.getUTCDate() + 1);
+    // Generate timeline data for all dates in the range
+    const timeline = allDates.map(date => {
+      const { start: dayStart, end: dayEnd } = getLocalDayRange(date);
 
       const dayData = {
-        date: dayStart.toISOString().split('T')[0],
+        date: formatLocalDate(dayStart),
         hours: []
       };
 
       // Find production record for this day
       const dayRecord = productionRecords.find(record => {
         const recordDate = new Date(record.startTime);
-        return recordDate.toDateString() === dayStart.toDateString();
+        return formatLocalDate(recordDate) === dayData.date;
       });
 
       for (let hour = 0; hour < 24; hour++) {
@@ -311,14 +416,20 @@ router.get('/production-timeline/:machineId', auth, async (req, res) => {
         });
       }
 
-      timeline.push(dayData);
-    }
+      return dayData;
+    });
 
-    res.json(timeline);
+    res.json({
+      timeline,
+      timeframe,
+      startDate: formatLocalDate(startDate),
+      endDate: formatLocalDate(endDate)
+    });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
+
 
 // Add stoppage record
 router.post('/stoppage', auth, async (req, res) => {
@@ -336,9 +447,8 @@ router.post('/stoppage', auth, async (req, res) => {
       }
     }
 
-    // Date range for query
-    const dayStart = new Date(`${date}T00:00:00.000Z`);
-    const dayEnd = new Date(`${date}T23:59:59.999Z`);
+    // Date range for query (local time)
+    const { start: dayStart, end: dayEnd } = getLocalDayRange(new Date(date));
     
     // Find or create record efficiently
     let productionRecord = await ProductionRecord.findOneAndUpdate(
@@ -388,7 +498,8 @@ router.post('/stoppage', auth, async (req, res) => {
     } 
     // Add new stoppage
     else {
-      const stoppageStart = new Date(`${date}T${hour.toString().padStart(2, '0')}:00:00Z`);
+      const stoppageStart = new Date(date);
+      stoppageStart.setHours(hour, 0, 0, 0);
       const stoppageEnd = new Date(stoppageStart.getTime() + duration * 60000);
       
       hourData.stoppages.push({
@@ -461,19 +572,19 @@ router.post('/production-assignment', auth, async (req, res) => {
       }
     }
     
+    // Get local date range
+    const { start: dayStart, end: dayEnd } = getLocalDayRange(new Date(date));
+
     // Find production record
     let productionRecord = await ProductionRecord.findOne({
       machineId,
-      startTime: {
-        $gte: new Date(date + 'T00:00:00.000Z'),
-        $lt: new Date(date + 'T23:59:59.999Z')
-      }
+      startTime: { $gte: dayStart, $lt: dayEnd }
     });
 
     if (!productionRecord) {
       productionRecord = new ProductionRecord({
         machineId,
-        startTime: new Date(date + 'T00:00:00.000Z'),
+        startTime: dayStart,
         hourlyData: []
       });
     }
@@ -584,7 +695,6 @@ router.post('/production-assignment', auth, async (req, res) => {
         if (targetHour === hour && defectiveUnits !== undefined) {
           hourData.defectiveUnits = defectiveUnits;
         }
-        
       }
     }
 
@@ -624,11 +734,18 @@ router.post('/production-assignment', auth, async (req, res) => {
   }
 });
 
-// Get machine statistics
+// Get machine statistics with custom timeframe
 router.get('/machine-stats/:machineId', auth, async (req, res) => {
   try {
     const { machineId } = req.params;
-    const { period = '24h' } = req.query;
+    const { startDate, endDate } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ message: 'Both startDate and endDate are required' });
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
 
     // Lean permission check
     const machine = await Machine.findById(machineId)
@@ -643,7 +760,7 @@ router.get('/machine-stats/:machineId', auth, async (req, res) => {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    const stats = await calculateMachineStats(machineId, period);
+    const stats = await calculateMachineStats(machineId, start, end);
     res.json({ ...stats, currentStatus: machine.status });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -666,9 +783,14 @@ router.get('/department-stats/:departmentId', auth, async (req, res) => {
       '_id'
     ).lean();
 
+    // Get date range for last 24 hours in local time
+    const endDate = new Date();
+    const startDate = new Date(endDate);
+    startDate.setDate(startDate.getDate() - 1);
+
     // Parallel stats calculation
     const statsPromises = machines.map(machine => 
-      calculateMachineStats(machine._id, '24h')
+      calculateMachineStats(machine._id, startDate, endDate)
         .then(stats => stats.oee)
         .catch(() => 0)
     );
@@ -691,9 +813,14 @@ router.get('/factory-stats', auth, async (req, res) => {
     const machines = await Machine.find({ isActive: true }).lean();
     const machineIds = machines.map(m => m._id);
 
+    // Get date range for last 24 hours in local time
+    const endDate = new Date();
+    const startDate = new Date(endDate);
+    startDate.setDate(startDate.getDate() - 1);
+
     // Get stats for all machines in parallel
     const statsPromises = machineIds.map(machineId => 
-      calculateMachineStats(machineId, '24h').catch(() => null)
+      calculateMachineStats(machineId, startDate, endDate).catch(() => null)
     );
     
     const allStats = await Promise.all(statsPromises);

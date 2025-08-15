@@ -236,15 +236,26 @@ class ApiService {
   }
 
   // Analytics
-  async getProductionTimeline(machineId: string) {
-    return this.request(`/analytics/production-timeline/${machineId}`);
-  }
-
-  async getMachineStats(machineId: string, period: string = '24h') {
-    return this.request(`/analytics/machine-stats/${machineId}`, {
-      params: { period }
+  async getProductionTimeline(machineId: string, params?: { 
+    timeframe?: string;
+    startDate?: string;
+    endDate?: string;
+  }) {
+    return this.request(`/analytics/production-timeline/${machineId}`, {
+      method: 'GET',
+      params
     });
   }
+
+  async getMachineStats(machineId: string, params?: { 
+    startDate?: string; 
+    endDate?: string 
+  }) {
+    return this.request(`/analytics/machine-stats/${machineId}`, {
+      method: 'GET',
+      params
+    }); 
+}
 
   async addStoppageRecord(stoppage: any) {
     return this.request('/analytics/stoppage', {
