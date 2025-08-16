@@ -1,7 +1,17 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Department, Machine } from '../types';
-import apiService from '../services/api';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
+import { 
+  fetchReports,
+  generateReport,
+  emailReport,
+  downloadReportPDF,
+  deleteReport,
+  setFilters,
+  clearError
+} from '../store/slices/reportSlice';
+import { fetchDepartments } from '../store/slices/departmentSlice';
+import { fetchAllMachines } from '../store/slices/machineSlice';
 import { 
   FileText, 
   Download, 
@@ -15,57 +25,18 @@ import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { ThemeContext } from '../App';
 
-interface Report {
-  _id: string;
-  type: 'daily' | 'weekly' | 'monthly' | 'yearly';
-  period: {
-    start: string;
-    end: string;
-  };
-  departmentId?: Department;
-  machineId?: Machine;
-  metrics: {
-    oee: number;
-    mttr: number;
-    mtbf: number;
-    availability: number;
-    quality: number;
-    performance: number;
-    totalUnitsProduced: number;
-    totalDefectiveUnits: number;
-    totalRunningMinutes: number;
-    totalStoppageMinutes: number;
-    totalStoppages: number;
-  };
-  shiftData: Array<{
-    shiftName: string;
-    startTime: string;
-    endTime: string;
-    metrics: {
-      oee: number;
-      unitsProduced: number;
-      defectiveUnits: number;
-      runningMinutes: number;
-      stoppageMinutes: number;
-    };
-  }>;
-  generatedBy: {
-    username: string;
-  };
-  emailSent: boolean;
-  emailSentAt?: string;
-  createdAt: string;
-}
 
 const Reports: React.FC = () => {
   const { isAdmin } = useAuth();
   const { isDarkMode } = useContext(ThemeContext);
-  const [reports, setReports] = useState<Report[]>([]);
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [machines, setMachines] = useState<Machine[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [generating, setGenerating] = useState(false);
-  const [filters, setFilters] = useState({
+  const dispatch = useAppDispatch();
+  
+  // Redux state
+  const { reports, loading, generating, filters } = useAppSelector((state) => state.reports);
+  const { departments } = useAppSelector((state) => state.departments);
+  const { machines } = useAppSelector((state) => state.machines);
+  
+  const [localFilters, setLocalFilters] = useState({
     type: '',
     departmentId: '',
     machineId: ''
@@ -96,42 +67,14 @@ const Reports: React.FC = () => {
     : 'border-gray-300 text-gray-700 hover:bg-gray-50';
 
   useEffect(() => {
-    fetchData();
+    dispatch(fetchReports());
+    dispatch(fetchDepartments());
+    dispatch(fetchAllMachines());
   }, []);
 
   useEffect(() => {
-    fetchReports();
-  }, [filters]);
-
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      const [reportsData, departmentsData, machinesData] = await Promise.all([
-        apiService.getReports(),
-        apiService.getDepartments(),
-        apiService.getMachines()
-      ]);
-      
-      setReports(reportsData);
-      setDepartments(departmentsData);
-      setMachines(machinesData);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to fetch data';
-      toast.error(message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchReports = async () => {
-    try {
-      const reportsData = await apiService.getReports(filters);
-      setReports(reportsData);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to fetch reports';
-      toast.error(message);
-    }
-  };
+    dispatch(fetchReports(localFilters));
+  }, [localFilters]);
 
   const handleGenerateReport = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -147,11 +90,9 @@ const Reports: React.FC = () => {
     }
     
     try {
-      setGenerating(true);
-      const report = await apiService.generateReport(reportForm);
-      setReports([report, ...reports]);
+      await dispatch(generateReport(reportForm));
       toast.success('Report generated successfully');
-      fetchReports();
+      dispatch(fetchReports(localFilters));
       
       // Reset form
       setReportForm({
@@ -164,19 +105,12 @@ const Reports: React.FC = () => {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to generate report';
       toast.error(message);
-    } finally {
-      setGenerating(false);
     }
   };
 
   const handleEmailReport = async (reportId: string) => {
     try {
-      await apiService.emailReport(reportId);
-      setReports(reports.map(r => 
-        r._id === reportId 
-          ? { ...r, emailSent: true, emailSentAt: new Date().toISOString() }
-          : r
-      ));
+      await dispatch(emailReport(reportId));
       toast.success('Report emailed successfully');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to email report';
@@ -186,7 +120,7 @@ const Reports: React.FC = () => {
 
   const handleDownloadPDF = async (reportId: string, reportType: string, startDate: string) => {
     try {
-      await apiService.downloadReportPDF(reportId, reportType, startDate);
+      await dispatch(downloadReportPDF({ reportId, reportType, startDate }));
       toast.success('PDF downloaded successfully');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to download PDF';
@@ -200,9 +134,7 @@ const Reports: React.FC = () => {
     }
 
     try {
-      await apiService.request(`/reports/${reportId}`, { method: 'DELETE' });
-      
-      setReports(reports.filter(r => r._id !== reportId));
+      await dispatch(deleteReport(reportId));
       toast.success('Report deleted successfully');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to delete report';
@@ -369,8 +301,8 @@ const Reports: React.FC = () => {
           <Filter className={`h-5 w-5 ${textSecondaryClass}`} />
           <div className="flex space-x-4 flex-1">
             <select
-              value={filters.type}
-              onChange={(e) => setFilters({...filters, type: e.target.value})}
+              value={localFilters.type}
+              onChange={(e) => setLocalFilters({...localFilters, type: e.target.value})}
               className={`${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} text-sm focus:outline-none focus:ring-2 focus:ring-blue-500`}
             >
               <option value="">All Types</option>
@@ -381,8 +313,8 @@ const Reports: React.FC = () => {
             </select>
 
             <select
-              value={filters.departmentId}
-              onChange={(e) => setFilters({...filters, departmentId: e.target.value})}
+              value={localFilters.departmentId}
+              onChange={(e) => setLocalFilters({...localFilters, departmentId: e.target.value})}
               className={`${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} text-sm focus:outline-none focus:ring-2 focus:ring-blue-500`}
             >
               <option value="">All Departments</option>

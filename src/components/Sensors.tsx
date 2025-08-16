@@ -3,8 +3,16 @@ import { useForm, FormProvider, useFormContext, Controller } from 'react-hook-fo
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useAuth } from '../context/AuthContext';
-import { Sensor, Machine, Department } from '../types';
-import apiService from '../services/api';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
+import { 
+  fetchSensorsAdmin,
+  createSensor,
+  updateSensor,
+  deleteSensor,
+  setFilters,
+  clearError
+} from '../store/slices/sensorSlice';
+import { fetchDepartments } from '../store/slices/departmentSlice';
 import {
   Cpu,
   Plus,
@@ -28,30 +36,6 @@ import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { ThemeContext } from '../App';
 
-interface PaginationData {
-  currentPage: number;
-  totalPages: number;
-  totalSensors: number;
-  limit: number;
-  hasNextPage: boolean;
-  hasPrevPage: boolean;
-  nextPage: number | null;
-  prevPage: number | null;
-}
-
-interface SensorsResponse {
-  sensors: Sensor[];
-  pagination: PaginationData;
-  filters: {
-    search: string;
-    department: string;
-    status: string;
-    sensorType: string;
-    sortBy: string;
-    sortOrder: string;
-  };
-}
-
 // Zod schema for sensor form validation
 const sensorFormSchema = z.object({
   name: z.string()
@@ -71,9 +55,11 @@ type SensorFormData = z.infer<typeof sensorFormSchema>;
 const Sensors: React.FC = () => {
   const { isAdmin } = useAuth();
   const { isDarkMode } = useContext(ThemeContext);
-  const [sensorsData, setSensorsData] = useState<SensorsResponse | null>(null);
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [loading, setLoading] = useState(true);
+  const dispatch = useAppDispatch();
+  
+  // Redux state
+  const { sensors, pagination, filters, loading } = useAppSelector((state) => state.sensors);
+  const { departments } = useAppSelector((state) => state.departments);
   
   // Theme classes
   const bgClass = isDarkMode ? 'bg-gray-900' : 'bg-gray-50';
@@ -96,17 +82,17 @@ const Sensors: React.FC = () => {
   // Pagination and filtering states
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [departmentFilter, setDepartmentFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
-  const [sensorTypeFilter, setSensorTypeFilter] = useState('');
-  const [sortBy, setSortBy] = useState('createdAt');
-  const [sortOrder, setSortOrder] = useState('desc');
+  const [searchTerm, setSearchTerm] = useState(filters.search);
+  const [departmentFilter, setDepartmentFilter] = useState(filters.department);
+  const [statusFilter, setStatusFilter] = useState(filters.status);
+  const [sensorTypeFilter, setSensorTypeFilter] = useState(filters.sensorType);
+  const [sortBy, setSortBy] = useState(filters.sortBy);
+  const [sortOrder, setSortOrder] = useState(filters.sortOrder);
   const [showFilters, setShowFilters] = useState(false);
   
   // Modal states
   const [showForm, setShowForm] = useState(false);
-  const [editingSensor, setEditingSensor] = useState<Sensor | null>(null);
+  const [editingSensor, setEditingSensor] = useState<any | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [statusTogglingId, setStatusTogglingId] = useState<string | null>(null);
 
@@ -129,8 +115,8 @@ const Sensors: React.FC = () => {
   useEffect(() => {
     if (showForm) {
       if (editingSensor) {
-        const machine = editingSensor.machineId as Machine;
-        const department = machine.departmentId as Department;
+        const machine = editingSensor.machineId;
+        const department = machine.departmentId;
         
         formMethods.reset({
           name: editingSensor.name,
@@ -154,35 +140,24 @@ const Sensors: React.FC = () => {
     }
   }, [showForm, editingSensor]);
 
-  const fetchData = useCallback(async (page = 1, search = '', department = '', status = '', sensorType = '') => {
-    try {
-      setLoading(true);
-      
-      const params = {
-        page,
-        limit: pageSize,
-        sortBy,
-        sortOrder,
-        ...(search && { search }),
-        ...(department && { department }),
-        ...(status !== '' && { status }),
-        ...(sensorType && { sensorType })
-      };
+  const fetchData = useCallback((page = 1, search = '', department = '', status = '', sensorType = '') => {
+    const params = {
+      page,
+      limit: pageSize,
+      sortBy,
+      sortOrder,
+      ...(search && { search }),
+      ...(department && { department }),
+      ...(status !== '' && { status }),
+      ...(sensorType && { sensorType })
+    };
 
-      const [sensorsResponse, departmentsData] = await Promise.all([
-        apiService.getSensorsAdmin(params),
-        apiService.getDepartments()
-      ]);
-      
-      setSensorsData(sensorsResponse);
-      setDepartments(departmentsData);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to fetch data';
-      toast.error(message);
-    } finally {
-      setLoading(false);
-    }
+    dispatch(fetchSensorsAdmin(params));
   }, [pageSize, sortBy, sortOrder]);
+
+  useEffect(() => {
+    dispatch(fetchDepartments());
+  }, []);
 
   // Debounced search effect
   useEffect(() => {
@@ -191,7 +166,7 @@ const Sensors: React.FC = () => {
     }
 
     const timeout = setTimeout(() => {
-      if (searchTerm !== (sensorsData?.filters.search || '')) {
+      if (searchTerm !== filters.search) {
         fetchData(1, searchTerm, departmentFilter, statusFilter, sensorTypeFilter);
       }
     }, 500);
@@ -208,7 +183,7 @@ const Sensors: React.FC = () => {
   }, [fetchData, departmentFilter, statusFilter, sensorTypeFilter, sortBy, sortOrder]);
 
   const handlePageChange = (page: number) => {
-    if (page >= 1 && sensorsData && page <= sensorsData.pagination.totalPages) {
+    if (page >= 1 && pagination && page <= pagination.totalPages) {
       fetchData(page, searchTerm, departmentFilter, statusFilter, sensorTypeFilter);
     }
   };
@@ -227,6 +202,14 @@ const Sensors: React.FC = () => {
     setSortBy('createdAt');
     setSortOrder('desc');
     setCurrentPage(1);
+    dispatch(setFilters({
+      search: '',
+      department: '',
+      status: '',
+      sensorType: '',
+      sortBy: 'createdAt',
+      sortOrder: 'desc'
+    }));
   };
 
   const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -236,10 +219,10 @@ const Sensors: React.FC = () => {
   const handleSubmit = formMethods.handleSubmit(async (formData) => {
     try {
       if (editingSensor) {
-        await apiService.updateSensor(editingSensor._id, formData);
+        await dispatch(updateSensor({ id: editingSensor._id, data: formData }));
         toast.success('Sensor updated successfully');
       } else {
-        await apiService.createSensor(formData);
+        await dispatch(createSensor(formData));
         toast.success('Sensor created successfully');
       }
       
@@ -260,7 +243,7 @@ const Sensors: React.FC = () => {
     }
   });
 
-  const handleEdit = (sensor: Sensor) => {
+  const handleEdit = (sensor: any) => {
     setEditingSensor(sensor);
     setShowForm(true);
   };
@@ -268,7 +251,7 @@ const Sensors: React.FC = () => {
   const handleToggleStatus = async (id: string, isActive: boolean) => {
     try {
       setStatusTogglingId(id);
-      await apiService.updateSensor(id, { isActive: !isActive });
+      await dispatch(updateSensor({ id, data: { isActive: !isActive } }));
       toast.success(`Sensor ${!isActive ? 'activated' : 'deactivated'} successfully`);
       
       // Refresh the current page
@@ -286,11 +269,11 @@ const Sensors: React.FC = () => {
 
     try {
       setDeletingId(sensorId);
-      await apiService.deleteSensor(sensorId);
+      await dispatch(deleteSensor(sensorId));
       toast.success('Sensor deleted successfully');
       
       // If we're on the last page and it becomes empty, go to previous page
-      if (sensorsData && sensorsData.sensors.length === 1 && currentPage > 1) {
+      if (sensors.length === 1 && currentPage > 1) {
         fetchData(currentPage - 1, searchTerm, departmentFilter, statusFilter, sensorTypeFilter);
       } else {
         fetchData(currentPage, searchTerm, departmentFilter, statusFilter, sensorTypeFilter);
@@ -331,7 +314,7 @@ const Sensors: React.FC = () => {
     }
   };
 
-  const Pagination = ({ pagination }: { pagination: PaginationData }) => {
+  const Pagination = ({ pagination }: { pagination: any }) => {
     if (pagination.totalPages <= 1) return null;
 
     const getPageNumbers = () => {
@@ -425,9 +408,6 @@ const Sensors: React.FC = () => {
       </div>
     );
   }
-
-  const sensors = sensorsData?.sensors || [];
-  const pagination = sensorsData?.pagination;
 
   return (
     <div className={`space-y-6 ${bgClass} min-h-screen p-4`}>
@@ -808,8 +788,8 @@ const Sensors: React.FC = () => {
                 </tr>
               ) : sensors.length > 0 ? (
                 sensors.map((sensor) => {
-                  const machine = (sensor.machineId as Machine);
-                  const department = (machine.departmentId as Department);
+                  const machine = sensor.machineId;
+                  const department = machine.departmentId;
                   
                   return (
                     <tr 
