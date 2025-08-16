@@ -1,7 +1,17 @@
 import React, { useEffect, useState, useContext } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Machine, MachineStats, MachineStatus } from '../types';
-import apiService from '../services/api';
+import { MachineStats, MachineStatus } from '../types';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
+import { 
+  fetchMachine, 
+  updateMachine, 
+  fetchMachineStats,
+  clearError 
+} from '../store/slices/machineSlice';
+import { 
+  addStoppageRecord, 
+  updateProductionAssignment 
+} from '../store/slices/analyticsSlice';
 import socketService from '../services/socket';
 import ProductionTimeline from './ProductionTimeline';
 import { ToastContainer, toast } from 'react-toastify';
@@ -26,7 +36,11 @@ const MachineView: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { isDarkMode } = useContext(ThemeContext);
-  const [machine, setMachine] = useState<Machine | null>(null);
+  const dispatch = useAppDispatch();
+  
+  // Redux state
+  const { currentMachine: machine, machineStats, machineStatuses } = useAppSelector((state) => state.machines);
+  
   const [stats, setStats] = useState<MachineStats | null>(null);
   const [ytdStats, setYtdStats] = useState<MachineStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -34,7 +48,6 @@ const MachineView: React.FC = () => {
   const [customStartDate, setCustomStartDate] = useState<string>('');
   const [customEndDate, setCustomEndDate] = useState<string>('');
   const [appliedCustomDates, setAppliedCustomDates] = useState({ start: '', end: '' });
-  const [machineStatus, setMachineStatus] = useState<string>('inactive');
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState({
     name: '',
@@ -47,6 +60,7 @@ const MachineView: React.FC = () => {
     visible: boolean;
   } | null>(null);
 
+  const machineStatus = machineStatuses[id || ''] || machine?.status || 'inactive';
   // Theme classes
   const bgClass = isDarkMode ? 'bg-gray-900' : 'bg-gray-50';
   const cardBgClass = isDarkMode ? 'bg-gray-800' : 'bg-white';
@@ -151,7 +165,7 @@ const MachineView: React.FC = () => {
 
   useEffect(() => {
     if (id) {
-      fetchMachineData();
+      dispatch(fetchMachine(id));
       setupSocketListeners();
     }
     return () => {
@@ -161,20 +175,30 @@ const MachineView: React.FC = () => {
     };
   }, [id, selectedPeriod, appliedCustomDates]);
 
-   const fetchYtdStats = async () => {
-    try {
-      const now = new Date();
-      const ytdStart = formatUTCDate(startOfYear(now));
-      const response = await apiService.request(`/analytics/machine-stats/${id}`, {
-        method: 'GET',
-        params: {
-          startDate: ytdStart,
-          endDate: formatUTCDate(now)
-        }
+  // Update edit form when machine changes
+  useEffect(() => {
+    if (machine) {
+      setEditForm({
+        name: machine.name,
+        description: machine.description || ''
       });
-      setYtdStats(response);
-    } catch (err) {
-      console.error('Failed to fetch YTD stats:', err);
+      setLoading(false);
+    }
+  }, [machine]);
+   const fetchYtdStats = async () => {
+    if (!id) return;
+    
+    const now = new Date();
+    const ytdStart = formatUTCDate(startOfYear(now));
+    
+    const result = await dispatch(fetchMachineStats({
+      machineId: id,
+      startDate: ytdStart,
+      endDate: formatUTCDate(now)
+    }));
+    
+    if (fetchMachineStats.fulfilled.match(result)) {
+      setYtdStats(result.payload.stats);
     }
   };
 
@@ -192,21 +216,21 @@ const MachineView: React.FC = () => {
 
     const handleProductionUpdate = (update: any) => {
       if (update.machineId === id) {
-        fetchStats();
+        fetchCurrentPeriodStats();
         fetchYtdStats();
       }
     };
 
     const handleAssignmentUpdated = (update: any) => {
       if (update.machineId === id) {
-        fetchStats();
+        fetchCurrentPeriodStats();
         fetchYtdStats();
       }
     };
 
     const handleStoppageUpdated = (update: any) => {
       if (update.machineId === id) {
-        fetchStats();
+        fetchCurrentPeriodStats();
         fetchYtdStats();
       }
     };
@@ -218,15 +242,14 @@ const MachineView: React.FC = () => {
           autoClose: 5000,
           theme: isDarkMode ? "dark" : "light"
         });
-        fetchMachineData();
+        dispatch(fetchMachine(id));
         fetchYtdStats();
       }
     };
 
     const handleMachineStateUpdate = (update: any) => {
       if (update.machineId === id) {
-        setMachineStatus(update.status);
-        setMachine(prev => prev ? { ...prev, status: update.dbStatus } : null);
+        // Machine status is now handled by Redux
       }
     };
 
@@ -247,60 +270,36 @@ const MachineView: React.FC = () => {
     };
   };
 
-  const fetchMachineData = async () => {
-    try {
-      setLoading(true);
-      const machineData = await apiService.getMachine(id!);
-      
-      setMachine(machineData);
-      setEditForm({
-        name: machineData.name,
-        description: machineData.description || ''
-      });
 
-      
-      // Fetch stats for selected period
-      const { startDate, endDate } = getDateRange();
-      const [statsData] = await Promise.all([
-        apiService.request(`/analytics/machine-stats/${id}`, {
-          method: 'GET',
-          params: { startDate, endDate }
-        })
-      ]);
-      
-      setStats(statsData);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to fetch machine data';
-      toast.error(message);
-    } finally {
-      setLoading(false);
+  const fetchCurrentPeriodStats = async () => {
+    if (!id) return;
+    
+    const { startDate, endDate } = getDateRange();
+    const result = await dispatch(fetchMachineStats({
+      machineId: id,
+      startDate,
+      endDate
+    }));
+    
+    if (fetchMachineStats.fulfilled.match(result)) {
+      setStats(result.payload.stats);
     }
   };
 
-  const fetchStats = async () => {
-    try {
-      const { startDate, endDate } = getDateRange();
-      const statsData = await apiService.request(`/analytics/machine-stats/${id}`, {
-        method: 'GET',
-        params: {
-          startDate,
-          endDate
-        }
-      });
-      setStats(statsData);
-    } catch (err) {
-      console.error('Failed to fetch stats:', err);
+  // Fetch stats when period changes
+  useEffect(() => {
+    if (id) {
+      fetchCurrentPeriodStats();
     }
-  };
-
+  }, [selectedPeriod, appliedCustomDates]);
   const handleAddStoppage = async (stoppage: any) => {
     try {
-      await apiService.addStoppageRecord({
+      await dispatch(addStoppageRecord({
         ...stoppage,
         machineId: id
-      });
+      }));
       toast.success('Stoppage recorded successfully');
-      fetchMachineData();
+      dispatch(fetchMachine(id!));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to record stoppage');
     }
@@ -308,15 +307,15 @@ const MachineView: React.FC = () => {
 
   const handleUpdateProduction = async (machineId: string, hour: number, date: string, data: any) => {
     try {
-      await apiService.updateProductionAssignment({
+      await dispatch(updateProductionAssignment({
         machineId,
         hour,
         date,
         ...data
-      });
+      }));
       toast.success('Production data updated');
-      fetchStats();
-      fetchMachineData();
+      fetchCurrentPeriodStats();
+      dispatch(fetchMachine(id!));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to update production data');
     }
@@ -331,8 +330,7 @@ const MachineView: React.FC = () => {
     if (!machine || !id) return;
     
     try {
-      const updatedMachine = await apiService.updateMachine(id, editForm);
-      setMachine(updatedMachine);
+      await dispatch(updateMachine({ id, data: editForm }));
       setIsEditing(false);
       toast.success('Machine details updated');
     } catch (err) {

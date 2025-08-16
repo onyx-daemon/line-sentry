@@ -1,6 +1,8 @@
 import React from 'react';
 import { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { Provider } from 'react-redux';
+import { store } from './store';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Layout from './components/Layout';
 import Login from './components/Login';
@@ -44,6 +46,7 @@ const App: React.FC = () => {
     setIsDarkMode(!isDarkMode);
   };
   return (
+    <Provider store={store}>
     <ThemeContext.Provider value={{ isDarkMode, toggleTheme }}>
       <div className={isDarkMode ? 'dark' : ''}>
     <AuthProvider>
@@ -70,6 +73,7 @@ const App: React.FC = () => {
     </AuthProvider>
       </div>
     </ThemeContext.Provider>
+    </Provider>
   );
 };
 

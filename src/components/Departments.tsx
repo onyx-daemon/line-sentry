@@ -4,8 +4,15 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Department } from '../types';
-import apiService from '../services/api';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
+import { 
+  fetchDepartmentsAdmin,
+  createDepartment,
+  updateDepartment,
+  deleteDepartment,
+  setFilters,
+  clearError
+} from '../store/slices/departmentSlice';
 import { 
   Building2, 
   Plus, 
@@ -23,28 +30,6 @@ import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { ThemeContext } from '../App';
 
-interface PaginationData {
-  currentPage: number;
-  totalPages: number;
-  totalDepartments: number;
-  limit: number;
-  hasNextPage: boolean;
-  hasPrevPage: boolean;
-  nextPage: number | null;
-  prevPage: number | null;
-}
-
-interface DepartmentsResponse {
-  departments: Department[];
-  pagination: PaginationData;
-  filters: {
-    search: string;
-    isActive: string;
-    sortBy: string;
-    sortOrder: string;
-  };
-}
-
 // Zod schemas
 const departmentSchema = z.object({
   name: z.string()
@@ -60,26 +45,24 @@ type DepartmentFormData = z.infer<typeof departmentSchema>;
 const Departments: React.FC = () => {
   const { isAdmin } = useAuth();
   const { isDarkMode } = useContext(ThemeContext);
+  const dispatch = useAppDispatch();
+  const { departments, pagination, filters, loading, error } = useAppSelector((state) => state.departments);
   const navigate = useNavigate();
   
   // Pagination and filtering states
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
-  const [sortBy, setSortBy] = useState('name');
-  const [sortOrder, setSortOrder] = useState('asc');
+  const [searchTerm, setSearchTerm] = useState(filters.search);
+  const [statusFilter, setStatusFilter] = useState(filters.isActive);
+  const [sortBy, setSortBy] = useState(filters.sortBy);
+  const [sortOrder, setSortOrder] = useState(filters.sortOrder);
   const [showFilters, setShowFilters] = useState(false);
   
   // Modal states
   const [isCreating, setIsCreating] = useState(false);
-  const [editingDepartment, setEditingDepartment] = useState<Department | null>(null);
+  const [editingDepartment, setEditingDepartment] = useState<any | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [statusTogglingId, setStatusTogglingId] = useState<string | null>(null);
-  
-  // Data states
-  const [departmentsData, setDepartmentsData] = useState<DepartmentsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
   
   // Debounced search
   const [searchTimeout, setSearchTimeout] = useState<NodeJS.Timeout | null>(null);
@@ -135,27 +118,17 @@ const Departments: React.FC = () => {
     }
   }, [editingDepartment]);
 
-  const fetchData = useCallback(async (page = 1, search = '', isActive = '') => {
-    try {
-      setLoading(true);
-      
-      const params = {
-        page,
-        limit: pageSize,
-        sortBy,
-        sortOrder,
-        ...(search && { search }),
-        ...(isActive !== '' && { isActive })
-      };
+  const fetchData = useCallback((page = 1, search = '', isActive = '') => {
+    const params = {
+      page,
+      limit: pageSize,
+      sortBy,
+      sortOrder,
+      ...(search && { search }),
+      ...(isActive !== '' && { isActive })
+    };
 
-      const data = await apiService.getDepartmentsAdmin(params);
-      setDepartmentsData(data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to fetch departments';
-      toast.error(message);
-    } finally {
-      setLoading(false);
-    }
+    dispatch(fetchDepartmentsAdmin(params));
   }, [pageSize, sortBy, sortOrder]);
 
   // Debounced search effect
@@ -165,7 +138,7 @@ const Departments: React.FC = () => {
     }
 
     const timeout = setTimeout(() => {
-      if (searchTerm !== (departmentsData?.filters.search || '')) {
+      if (searchTerm !== filters.search) {
         fetchData(1, searchTerm, statusFilter);
       }
     }, 500);
@@ -182,7 +155,7 @@ const Departments: React.FC = () => {
   }, [fetchData, statusFilter, sortBy, sortOrder]);
 
   const handlePageChange = (page: number) => {
-    if (page >= 1 && departmentsData && page <= departmentsData.pagination.totalPages) {
+    if (page >= 1 && pagination && page <= pagination.totalPages) {
       fetchData(page, searchTerm, statusFilter);
     }
   };
@@ -199,11 +172,17 @@ const Departments: React.FC = () => {
     setSortBy('name');
     setSortOrder('asc');
     setCurrentPage(1);
+    dispatch(setFilters({
+      search: '',
+      isActive: '',
+      sortBy: 'name',
+      sortOrder: 'asc'
+    }));
   };
 
   const handleCreateDepartment = createFormMethods.handleSubmit(async (formData) => {
     try {
-      await apiService.createDepartment(formData);
+      await dispatch(createDepartment(formData));
       toast.success('Department created successfully');
       
       // Refresh the current page
@@ -219,7 +198,10 @@ const Departments: React.FC = () => {
     if (!editingDepartment) return;
     
     try {
-      await apiService.updateDepartment(editingDepartment._id, formData);
+      await dispatch(updateDepartment({ 
+        id: editingDepartment._id, 
+        data: formData 
+      }));
       toast.success('Department updated successfully');
       
       // Refresh the current page
@@ -234,7 +216,10 @@ const Departments: React.FC = () => {
   const handleToggleStatus = async (id: string, isActive: boolean) => {
     try {
       setStatusTogglingId(id);
-      await apiService.updateDepartment(id, { isActive: !isActive });
+      await dispatch(updateDepartment({ 
+        id, 
+        data: { isActive: !isActive } 
+      }));
       toast.success(`Department ${!isActive ? 'activated' : 'deactivated'} successfully`);
       
       // Refresh the current page
@@ -251,11 +236,11 @@ const Departments: React.FC = () => {
     if (window.confirm('Are you sure you want to permanently delete this department? This will also delete all associated machines and cannot be undone.')) {
       try {
         setDeletingId(id);
-        await apiService.deleteDepartment(id);
+        await dispatch(deleteDepartment(id));
         toast.success('Department deleted successfully');
         
         // If we're on the last page and it becomes empty, go to previous page
-        if (departmentsData && departmentsData.departments.length === 1 && currentPage > 1) {
+        if (departments.length === 1 && currentPage > 1) {
           fetchData(currentPage - 1, searchTerm, statusFilter);
         } else {
           fetchData(currentPage, searchTerm, statusFilter);
@@ -269,7 +254,7 @@ const Departments: React.FC = () => {
     }
   };
 
-  const Pagination = ({ pagination }: { pagination: PaginationData }) => {
+  const Pagination = ({ pagination }: { pagination: any }) => {
     if (pagination.totalPages <= 1) return null;
 
     const getPageNumbers = () => {
@@ -363,9 +348,6 @@ const Departments: React.FC = () => {
       </div>
     );
   }
-
-  const departments = departmentsData?.departments || [];
-  const pagination = departmentsData?.pagination;
 
   return (
     <div className={`space-y-6 ${bgClass} min-h-screen p-4`}>

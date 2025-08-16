@@ -1,7 +1,20 @@
 import React, { useEffect, useState, useRef, useMemo, useContext } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Department, Machine, MachineStats, MachineStatus } from '../types';
-import apiService from '../services/api';
+import { MachineStats, MachineStatus } from '../types';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
+import { 
+  fetchDepartment,
+  clearError as clearDepartmentError 
+} from '../store/slices/departmentSlice';
+import { 
+  fetchMachinesByDepartment,
+  createMachine,
+  deleteMachine,
+  updateMachinePosition,
+  updateMachineStatus,
+  fetchMachineStats,
+  clearError as clearMachineError
+} from '../store/slices/machineSlice';
 import { useAuth } from '../context/AuthContext';
 import socketService from '../services/socket';
 import { ThemeContext } from '../App';
@@ -27,9 +40,14 @@ const DepartmentView: React.FC = () => {
   const navigate = useNavigate();
   const { isAdmin } = useAuth();
   const { isDarkMode } = useContext(ThemeContext);
-  const [department, setDepartment] = useState<Department | null>(null);
-  const [machines, setMachines] = useState<Machine[]>([]);
-  const [loading, setLoading] = useState(true);
+  const dispatch = useAppDispatch();
+  
+  // Redux state
+  const { currentDepartment: department, loading: departmentLoading } = useAppSelector((state) => state.departments);
+  const { machines, machineStats, machineStatuses, loading: machineLoading } = useAppSelector((state) => state.machines);
+  
+  const loading = departmentLoading || machineLoading;
+  
   const [isAddingMachine, setIsAddingMachine] = useState(false);
   const [newMachine, setNewMachine] = useState<{
     name: string;
@@ -43,13 +61,9 @@ const DepartmentView: React.FC = () => {
   const [dimensions, setDimensions] = useState<{[key: string]: {width: number; height: number}}>({});
   const [draggingMachineId, setDraggingMachineId] = useState<string | null>(null);
   const [resizingMachineId, setResizingMachineId] = useState<string | null>(null);
-  const [machineStatuses, setMachineStatuses] = useState<{[key: string]: string}>({});
   const layoutContainerRef = useRef<HTMLDivElement>(null);
-  const [machineStats, setMachineStats] = useState<{[machineId: string]: MachineStats}>({});
   const dragOffset = useRef({ x: 0, y: 0 });
   const resizeInitial = useRef({ width: 0, height: 0, x: 0, y: 0 });
-  const machinesRef = useRef<Machine[]>([]);
-  machinesRef.current = machines;
 
   // Theme classes
   const bgClass = isDarkMode ? 'bg-gray-900' : 'bg-gray-50';
@@ -106,7 +120,8 @@ const DepartmentView: React.FC = () => {
 
   useEffect(() => {
     if (id) {
-      fetchDepartmentData();
+      dispatch(fetchDepartment(id));
+      dispatch(fetchMachinesByDepartment(id));
       setupSocketListeners();
     }
     
@@ -118,34 +133,45 @@ const DepartmentView: React.FC = () => {
     };
   }, [id]);
 
+  // Update positions and dimensions when machines change
+  useEffect(() => {
+    if (machines.length > 0) {
+      const initialPositions: {[key: string]: {x: number; y: number}} = {};
+      const initialDimensions: {[key: string]: {width: number; height: number}} = {};
+      
+      machines.forEach((machine) => {
+        initialPositions[machine._id] = { ...machine.position };
+        initialDimensions[machine._id] = { 
+          width: machine.dimensions?.width || 154, 
+          height: machine.dimensions?.height || 152 
+        };
+      });
+
+      setPositions(initialPositions);
+      setDimensions(initialDimensions);
+    }
+  }, [machines]);
+
   const setupSocketListeners = () => {
     const handleMachineStateUpdate = (update: any) => {
-      const machine = machinesRef.current.find(m => m._id === update.machineId);
+      const machine = machines.find(m => m._id === update.machineId);
       if (machine) {
-        setMachineStatuses(prev => ({
-          ...prev,
-          [update.machineId]: update.status
+        dispatch(updateMachineStatus({
+          machineId: update.machineId,
+          status: update.dbStatus
         }));
-        
-        setMachines(prevMachines => 
-          prevMachines.map(m => 
-            m._id === update.machineId 
-              ? { ...m, status: update.dbStatus }
-              : m
-          )
-        );
       }
     };
 
     const handleProductionUpdate = (update: any) => {
-      const machine = machinesRef.current.find(m => m._id === update.machineId);
+      const machine = machines.find(m => m._id === update.machineId);
       if (machine) {
         fetchMachineStatsForMachine(update.machineId);
       }
     };
 
     const handleStoppageUpdate = (update: any) => {
-      const machine = machinesRef.current.find(m => m._id === update.machineId);
+      const machine = machines.find(m => m._id === update.machineId);
       if (machine) {
         fetchMachineStatsForMachine(update.machineId);
       }
@@ -164,96 +190,39 @@ const DepartmentView: React.FC = () => {
     };
   };
 
-  const fetchDepartmentData = async () => {
-    try {
-      setLoading(true);
-      const deptData = await apiService.getDepartment(id!);
-      setDepartment(deptData);
-      setMachines(deptData.machines || []);
-      
-      const initialPositions: {[key: string]: {x: number; y: number}} = {};
-      const initialDimensions: {[key: string]: {width: number; height: number}} = {};
-      
-      deptData.machines?.forEach((machine: Machine) => {
-        initialPositions[machine._id] = { ...machine.position };
-        initialDimensions[machine._id] = { 
-          width: machine.dimensions?.width || 154, 
-          height: machine.dimensions?.height || 152 
-        };
-      });
-
-      setPositions(initialPositions);
-      setDimensions(initialDimensions);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to fetch department data';
-      toast.error(message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const fetchMachineStatsForMachine = async (machineId: string) => {
-    try {
-      // Calculate YTD date range
-      const now = new Date();
-      const startDate = new Date(now.getFullYear(), 0, 1); // January 1st of current year
-      const endDate = now;
+    // Calculate YTD date range
+    const now = new Date();
+    const startDate = new Date(now.getFullYear(), 0, 1); // January 1st of current year
+    const endDate = now;
 
-      const stats = await apiService.getMachineStats(machineId, { 
-        startDate: startDate.toISOString(), 
-        endDate: endDate.toISOString() 
-      });
-      
-      setMachineStats(prev => ({
-        ...prev,
-        [machineId]: stats
-      }));
-    } catch (error) {
-      console.error(`Failed to fetch YTD stats for machine ${machineId}:`, error);
-    }
+    dispatch(fetchMachineStats({
+      machineId,
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString()
+    }));
   };
 
-  const fetchMachineStats = async () => {
-    try {
-      const stats: {[machineId: string]: MachineStats} = {};
-      
-      // Calculate YTD date range once
-      const now = new Date();
-      const startDate = new Date(now.getFullYear(), 0, 1); // January 1st
-      const startDateStr = startDate.toISOString();
-      const endDateStr = now.toISOString();
+  const fetchAllMachineStats = () => {
+    // Calculate YTD date range once
+    const now = new Date();
+    const startDate = new Date(now.getFullYear(), 0, 1); // January 1st
+    const startDateStr = startDate.toISOString();
+    const endDateStr = now.toISOString();
 
-      // Fetch stats for all machines in parallel
-      const statsPromises = machines.map(machine => 
-        apiService.getMachineStats(machine._id, { 
-          startDate: startDateStr, 
-          endDate: endDateStr 
-        })
-          .then(machineStats => ({ machineId: machine._id, machineStats }))
-          .catch(error => {
-            console.error(`Failed to fetch YTD stats for machine ${machine._id}:`, error);
-            return null;
-          })
-      );
-
-      const results = await Promise.all(statsPromises);
-      
-      // Aggregate results
-      results.forEach(result => {
-        if (result) {
-          stats[result.machineId] = result.machineStats;
-        }
-      });
-
-      setMachineStats(stats);
-    } catch (error) {
-      console.error('Failed to fetch YTD machine stats:', error);
-    }
+    // Fetch stats for all machines
+    machines.forEach(machine => {
+      dispatch(fetchMachineStats({
+        machineId: machine._id,
+        startDate: startDateStr,
+        endDate: endDateStr
+      }));
+    });
   };
 
   useEffect(() => {
     if (machines.length > 0) {
-      fetchMachineStats();
+      fetchAllMachineStats();
     }
   }, [machines]);
 
@@ -285,29 +254,31 @@ const DepartmentView: React.FC = () => {
 
   const handleAddMachine = async () => {
     try {
-      const createdMachine = await apiService.createMachine({
+      const result = await dispatch(createMachine({
         ...newMachine,
         departmentId: id
-      });
+      }));
       
-      setMachines([...machines, createdMachine]);
-      setPositions({
-        ...positions,
-        [createdMachine._id]: createdMachine.position
-      });
-      setDimensions({
-        ...dimensions,
-        [createdMachine._id]: { 
-          width: createdMachine.dimensions?.width || 154, 
-          height: createdMachine.dimensions?.height || 152 
-        }
-      });
-      setIsAddingMachine(false);
-      setNewMachine({
-        name: '',
-        description: '',
-      });
-      toast.success('Machine added successfully');
+      if (createMachine.fulfilled.match(result)) {
+        const createdMachine = result.payload;
+        setPositions({
+          ...positions,
+          [createdMachine._id]: createdMachine.position
+        });
+        setDimensions({
+          ...dimensions,
+          [createdMachine._id]: { 
+            width: createdMachine.dimensions?.width || 154, 
+            height: createdMachine.dimensions?.height || 152 
+          }
+        });
+        setIsAddingMachine(false);
+        setNewMachine({
+          name: '',
+          description: '',
+        });
+        toast.success('Machine added successfully');
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to add machine';
       toast.error(message);
@@ -318,8 +289,7 @@ const DepartmentView: React.FC = () => {
     e.stopPropagation();
     if (window.confirm('Are you sure you want to permanently delete this machine? All associated data will be lost.')) {
       try {
-        await apiService.deleteMachine(machineId);
-        setMachines(machines.filter(m => m._id !== machineId));
+        await dispatch(deleteMachine(machineId));
         
         // Remove from positions and dimensions to prevent errors
         const newPositions = { ...positions };
@@ -421,11 +391,11 @@ const DepartmentView: React.FC = () => {
       }
 
       try {
-        await apiService.updateMachinePosition(
-          draggingMachineId, 
-          positions[draggingMachineId],
-          dimensions[draggingMachineId]
-        );
+        await dispatch(updateMachinePosition({
+          id: draggingMachineId,
+          position: positions[draggingMachineId],
+          dimensions: dimensions[draggingMachineId]
+        }));
         toast.success('Machine position updated');
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to update machine position';
@@ -443,11 +413,11 @@ const DepartmentView: React.FC = () => {
       }
 
       try {
-        await apiService.updateMachinePosition(
-          resizingMachineId, 
-          positions[resizingMachineId],
-          dimensions[resizingMachineId]
-        );
+        await dispatch(updateMachinePosition({
+          id: resizingMachineId,
+          position: positions[resizingMachineId],
+          dimensions: dimensions[resizingMachineId]
+        }));
         toast.success('Machine size updated');
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to update machine size';
@@ -474,15 +444,16 @@ const DepartmentView: React.FC = () => {
           return acc;
         }, {} as {[key: string]: {width: number; height: number}});
 
-      await Promise.all(
+      const updatePromises = 
         Object.entries(validPositions).map(([machineId, position]) => 
-          apiService.updateMachinePosition(
-            machineId, 
+          dispatch(updateMachinePosition({
+            id: machineId,
             position,
-            validDimensions[machineId]
-          )
-        )
-      );
+            dimensions: validDimensions[machineId]
+          }))
+        );
+      
+      await Promise.all(updatePromises);
       setEditLayoutMode(false);
       toast.success('Layout saved successfully');
     } catch (err) {

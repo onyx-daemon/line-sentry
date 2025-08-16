@@ -2,9 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
+import { 
+  fetchDepartments, 
+  fetchDepartmentStats,
+  updateDepartmentOEE 
+} from '../store/slices/departmentSlice';
+import { fetchFactoryStats, updateFactoryStats } from '../store/slices/analyticsSlice';
 import { ThemeContext } from '../App';
-import { Department } from '../types';
-import apiService from '../services/api';
 import socketService from '../services/socket';
 import { 
   Building2, 
@@ -16,22 +21,16 @@ import {
 } from 'lucide-react';
 
 const Dashboard: React.FC = () => {
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [factoryStats, setFactoryStats] = useState({
-    totalUnits: 0,
-    avgOEE: 0,
-    unclassifiedStoppages: 0,
-    activeMachines: 0
-  });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const dispatch = useAppDispatch();
+  const { departments, loading, error } = useAppSelector((state) => state.departments);
+  const { factoryStats } = useAppSelector((state) => state.analytics);
   const { user, isOperator } = useAuth();
   const { isDarkMode } = useContext(ThemeContext);
   const navigate = useNavigate();
 
   useEffect(() => {
-    fetchDepartments();
-    fetchFactoryStats();
+    dispatch(fetchDepartments(10));
+    dispatch(fetchFactoryStats());
     setupSocketListeners();
   }, []);
 
@@ -39,16 +38,16 @@ const Dashboard: React.FC = () => {
     socketService.connect();
 
     const handleProductionUpdate = () => {
-      fetchFactoryStats();
-      fetchDepartments();
+      dispatch(fetchFactoryStats());
+      dispatch(fetchDepartments(10));
     };
 
     const handleStoppageUpdate = () => {
-      fetchFactoryStats();
+      dispatch(fetchFactoryStats());
     };
 
     const handleMachineStateUpdate = () => {
-      fetchFactoryStats();
+      dispatch(fetchFactoryStats());
     };
 
     socketService.on('production-update', handleProductionUpdate);
@@ -64,36 +63,22 @@ const Dashboard: React.FC = () => {
     };
   };
 
-  const fetchDepartments = async () => {
-    try {
-      // Pass limit=10 parameter to get only 10 departments
-      const data = await apiService.getDepartment('?limit=10');
-      const departmentsWithOEE = await Promise.all(data.map(async (dept: any) => {
-        const stats = await apiService.getDepartmentStats(dept._id);
-        return { ...dept, avgOEE: stats.avgOEE };
-      }));
-
-      setDepartments(departmentsWithOEE);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch departments');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchFactoryStats = async () => {
-    try {
-      const stats = await apiService.getFactoryStats();
-      setFactoryStats({
-        totalUnits: stats.totalUnits,
-        avgOEE: stats.avgOEE,
-        unclassifiedStoppages: stats.unclassifiedStoppages,
-        activeMachines: stats.activeMachines
+  // Fetch department OEE stats
+  useEffect(() => {
+    if (departments.length > 0) {
+      departments.forEach(dept => {
+        dispatch(fetchDepartmentStats(dept._id))
+          .then((result) => {
+            if (fetchDepartmentStats.fulfilled.match(result)) {
+              dispatch(updateDepartmentOEE({
+                departmentId: dept._id,
+                avgOEE: result.payload.stats.avgOEE
+              }));
+            }
+          });
       });
-    } catch (err) {
-      console.error('Failed to fetch factory stats:', err);
     }
-  };
+  }, [departments.length]);
 
   const handleDepartmentClick = (departmentId: string) => {
     navigate(`/department/${departmentId}`);
