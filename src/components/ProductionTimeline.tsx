@@ -76,6 +76,10 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
   });
   const [applyToShift, setApplyToShift] = useState(false);
   const [shiftInfo, setShiftInfo] = useState<{name: string; hours: number[]} | null>(null);
+  const [operatorSearch, setOperatorSearch] = useState('');
+  const [moldSearch, setMoldSearch] = useState('');
+  const [showOperatorResults, setShowOperatorResults] = useState(false);
+  const [showMoldResults, setShowMoldResults] = useState(false);
   
   // Theme classes
   const bgClass = isDarkMode ? 'bg-gray-900' : 'bg-gray-50';
@@ -94,6 +98,21 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
 
   // Check for pending stoppages
   const pendingStoppage = hour.stoppages.find(s => s.reason === 'unclassified' || (s as any).isPending);
+
+  // Filtered lists based on search
+  const filteredOperators = availableOperators.filter(op =>
+    op.username.toLowerCase().includes(operatorSearch.toLowerCase())
+  );
+  
+  const filteredMolds = availableMolds.filter(mold =>
+    mold.name.toLowerCase().includes(moldSearch.toLowerCase())
+  );
+
+  // Initialize search values based on current assignment
+  useEffect(() => {
+    setOperatorSearch(hour.operator?.username || '');
+    setMoldSearch(hour.mold?.name || '');
+  }, [hour]);
 
   // Detect shift when hour changes
   useEffect(() => {
@@ -459,37 +478,126 @@ const ProductionModal: React.FC<ProductionModalProps> = ({
                 <label className={`block text-sm font-medium mb-2 ${textSecondaryClass}`}>
                   Operator
                 </label>
-
-                <select
-                  value={assignmentForm.operatorId}
-                  onChange={(e) => setAssignmentForm({...assignmentForm, operatorId: e.target.value})}
-                  className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                >
-                  <option value="">No operator assigned</option>
-                  {availableOperators.map((operator) => (
-                    <option key={operator._id} value={operator._id}>
-                      {operator.username}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={operatorSearch}
+                    onChange={(e) => {
+                      setOperatorSearch(e.target.value);
+                      setShowOperatorResults(true);
+                    }}
+                    onFocus={() => setShowOperatorResults(true)}
+                    onBlur={() => setTimeout(() => setShowOperatorResults(false), 200)}
+                    className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    placeholder="Search operators..."
+                  />
+                  {operatorSearch && (
+                    <button
+                      type="button"
+                      className="absolute right-2 top-1/2 -translate-y-1/2"
+                      onClick={() => {
+                        setOperatorSearch('');
+                        setAssignmentForm(prev => ({ ...prev, operatorId: '' }));
+                      }}
+                    >
+                      <X className={`h-4 w-4 ${textSecondaryClass}`} />
+                    </button>
+                  )}
+                  {showOperatorResults && operatorSearch && (
+                    <div 
+                      className={`absolute z-10 w-full mt-1 max-h-60 overflow-auto rounded-md shadow-lg ${
+                        isDarkMode ? `bg-gray-800 border border-gray-700 ${textClass}` :  `bg-white border border-gray-200 ${textClass}`
+                      }`}
+                    >
+                      {filteredOperators.length > 0 ? (
+                        filteredOperators.map((operator) => (
+                          <div
+                            key={operator._id}
+                            onMouseDown={(e) => e.preventDefault()} // Prevent onBlur from firing
+                            onClick={() => {
+                              setAssignmentForm(prev => ({ 
+                                ...prev, 
+                                operatorId: operator._id || ''
+                              }));
+                              setOperatorSearch(operator.username);
+                              setShowOperatorResults(false);
+                            }}
+                            className={`px-4 py-2 cursor-pointer ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+                          >
+                            {operator.username}
+                          </div>
+                        ))
+                      ) : (
+                        <div className={`px-4 py-2 ${textSecondaryClass}`}>
+                          No operators found
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
-              <div>
+               <div>
                 <label className={`block text-sm font-medium mb-2 ${textSecondaryClass}`}>
                   Mold
                 </label>
-                <select
-                  value={assignmentForm.moldId}
-                  onChange={(e) => setAssignmentForm({...assignmentForm, moldId: e.target.value})}
-                  className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                >
-                  <option value="">No mold assigned</option>
-                  {availableMolds.map((mold) => (
-                    <option key={mold._id} value={mold._id}>
-                      {mold.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={moldSearch}
+                    onChange={(e) => {
+                      setMoldSearch(e.target.value);
+                      setShowMoldResults(true);
+                    }}
+                    onFocus={() => setShowMoldResults(true)}
+                    onBlur={() => setTimeout(() => setShowMoldResults(false), 200)}
+                    className={`w-full ${inputBgClass} border ${inputBorderClass} rounded-md px-3 py-2 ${textClass} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                    placeholder="Search molds..."
+                  />
+                  {moldSearch && (
+                    <button
+                      type="button"
+                      className="absolute right-2 top-1/2 -translate-y-1/2"
+                      onClick={() => {
+                        setMoldSearch('');
+                        setAssignmentForm(prev => ({ ...prev, moldId: '' }));
+                      }}
+                    >
+                      <X className={`h-4 w-4 ${textSecondaryClass}`} />
+                    </button>
+                  )}
+                  {showMoldResults && moldSearch && (
+                    <div 
+                      className={`absolute z-10 w-full mt-1 max-h-60 overflow-auto rounded-md shadow-lg ${
+                        isDarkMode ? `bg-gray-800 border border-gray-700 ${textClass}` : `bg-white border border-gray-200 ${textClass}`
+                      }`}
+                    >
+                    {filteredMolds.length > 0 ? (
+                        filteredMolds.map((mold) => (
+                          <div
+                            key={mold._id}
+                            onMouseDown={(e) => e.preventDefault()} // Prevent onBlur from firing
+                            onClick={() => {
+                              setAssignmentForm(prev => ({ 
+                                ...prev, 
+                                moldId: mold._id 
+                              }));
+                              setMoldSearch(mold.name);
+                              setShowMoldResults(false);
+                            }}
+                            className={`px-4 py-2 cursor-pointer ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+                          >
+                            {mold.name}
+                          </div>
+                        ))
+                      ) : (
+                        <div className={`px-4 py-2 ${textSecondaryClass}`}>
+                          No molds found
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div>
