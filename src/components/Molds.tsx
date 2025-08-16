@@ -3,8 +3,17 @@ import { useForm, FormProvider } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useAuth } from '../context/AuthContext';
-import { Mold, Department } from '../types';
-import apiService from '../services/api';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
+import { 
+  fetchMoldsAdmin,
+  createMold,
+  updateMold,
+  deleteMold,
+  toggleMoldStatus,
+  setFilters,
+  clearError
+} from '../store/slices/moldSlice';
+import { fetchDepartments } from '../store/slices/departmentSlice';
 import { 
   Plus, 
   Edit, 
@@ -21,29 +30,6 @@ import {
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { ThemeContext } from '../App';
-
-interface PaginationData {
-  currentPage: number;
-  totalPages: number;
-  totalMolds: number;
-  limit: number;
-  hasNextPage: boolean;
-  hasPrevPage: boolean;
-  nextPage: number | null;
-  prevPage: number | null;
-}
-
-interface MoldsResponse {
-  molds: Mold[];
-  pagination: PaginationData;
-  filters: {
-    search: string;
-    department: string;
-    isActive: string;
-    sortBy: string;
-    sortOrder: string;
-  };
-}
 
 // Zod schemas
 const moldSchema = z.object({
@@ -65,23 +51,25 @@ type MoldFormData = z.infer<typeof moldSchema>;
 const Molds: React.FC = () => {
   const { isAdmin } = useAuth();
   const { isDarkMode } = useContext(ThemeContext);
-  const [moldsData, setMoldsData] = useState<MoldsResponse | null>(null);
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [loading, setLoading] = useState(true);
+  const dispatch = useAppDispatch();
+  
+  // Redux state
+  const { molds, pagination, filters, loading } = useAppSelector((state) => state.molds);
+  const { departments } = useAppSelector((state) => state.departments);
   
   // Pagination and filtering states
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [departmentFilter, setDepartmentFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
-  const [sortBy, setSortBy] = useState('name');
-  const [sortOrder, setSortOrder] = useState('asc');
+  const [searchTerm, setSearchTerm] = useState(filters.search);
+  const [departmentFilter, setDepartmentFilter] = useState(filters.department);
+  const [statusFilter, setStatusFilter] = useState(filters.isActive);
+  const [sortBy, setSortBy] = useState(filters.sortBy);
+  const [sortOrder, setSortOrder] = useState(filters.sortOrder);
   const [showFilters, setShowFilters] = useState(false);
   
   // Modal states
   const [isCreating, setIsCreating] = useState(false);
-  const [editingMold, setEditingMold] = useState<Mold | null>(null);
+  const [editingMold, setEditingMold] = useState<any | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [statusTogglingId, setStatusTogglingId] = useState<string | null>(null);
 
@@ -147,51 +135,23 @@ const Molds: React.FC = () => {
     }
   }, [editingMold]);
 
-  const fetchData = useCallback(async (page = 1, search = '', department = '', isActive = '') => {
-    try {
-      setLoading(true);
-      
-      const params = {
-        page,
-        limit: pageSize,
-        sortBy,
-        sortOrder,
-        ...(search && { search }),
-        ...(department && { department }),
-        ...(isActive !== '' && { isActive })
-      };
+  const fetchData = useCallback((page = 1, search = '', department = '', isActive = '') => {
+    const params = {
+      page,
+      limit: pageSize,
+      sortBy,
+      sortOrder,
+      ...(search && { search }),
+      ...(department && { department }),
+      ...(isActive !== '' && { isActive })
+    };
 
-      const [moldsResponse, departmentsData] = await Promise.all([
-        apiService.getMoldsAdmin(params),
-        apiService.getDepartments()
-      ]);
-      
-      // Enrich molds with department names
-      const enrichedMolds = moldsResponse.molds.map((mold: Mold) => {
-        if (typeof mold.departmentId === 'string') {
-          const department = departmentsData.find((d: Department) => d._id === mold.departmentId);
-          return {
-            ...mold,
-            departmentId: department 
-              ? { _id: department._id, name: department.name } 
-              : { _id: mold.departmentId, name: 'Unknown' }
-          };
-        }
-        return mold;
-      });
-      
-      setMoldsData({
-        ...moldsResponse,
-        molds: enrichedMolds
-      });
-      setDepartments(departmentsData);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to fetch data';
-      toast.error(message);
-    } finally {
-      setLoading(false);
-    }
+    dispatch(fetchMoldsAdmin(params));
   }, [pageSize, sortBy, sortOrder]);
+
+  useEffect(() => {
+    dispatch(fetchDepartments());
+  }, []);
 
   // Debounced search effect
   useEffect(() => {
@@ -200,7 +160,7 @@ const Molds: React.FC = () => {
     }
 
     const timeout = setTimeout(() => {
-      if (searchTerm !== (moldsData?.filters.search || '')) {
+      if (searchTerm !== filters.search) {
         fetchData(1, searchTerm, departmentFilter, statusFilter);
       }
     }, 500);
@@ -217,7 +177,7 @@ const Molds: React.FC = () => {
   }, [fetchData, departmentFilter, statusFilter, sortBy, sortOrder]);
 
   const handlePageChange = (page: number) => {
-    if (page >= 1 && moldsData && page <= moldsData.pagination.totalPages) {
+    if (page >= 1 && pagination && page <= pagination.totalPages) {
       fetchData(page, searchTerm, departmentFilter, statusFilter);
     }
   };
@@ -235,12 +195,19 @@ const Molds: React.FC = () => {
     setSortBy('name');
     setSortOrder('asc');
     setCurrentPage(1);
+    dispatch(setFilters({
+      search: '',
+      department: '',
+      isActive: '',
+      sortBy: 'name',
+      sortOrder: 'asc'
+    }));
   };
 
   const handleToggleStatus = async (id: string, isActive: boolean) => {
     try {
       setStatusTogglingId(id);
-      await apiService.toggleMoldStatus(id);
+      await dispatch(toggleMoldStatus(id));
       toast.success(`Mold ${!isActive ? 'activated' : 'deactivated'} successfully`);
       
       // Refresh the current page
@@ -258,11 +225,11 @@ const Molds: React.FC = () => {
 
     try {
       setDeletingId(id);
-      await apiService.deleteMold(id);
+      await dispatch(deleteMold(id));
       toast.success('Mold deleted successfully');
       
       // If we're on the last page and it becomes empty, go to previous page
-      if (moldsData && moldsData.molds.length === 1 && currentPage > 1) {
+      if (molds.length === 1 && currentPage > 1) {
         fetchData(currentPage - 1, searchTerm, departmentFilter, statusFilter);
       } else {
         fetchData(currentPage, searchTerm, departmentFilter, statusFilter);
@@ -277,7 +244,7 @@ const Molds: React.FC = () => {
 
   const handleCreateMold = createFormMethods.handleSubmit(async (formData) => {
     try {
-      await apiService.createMold(formData);
+      await dispatch(createMold(formData));
       toast.success('Mold created successfully');
       
       // Refresh the current page
@@ -293,7 +260,7 @@ const Molds: React.FC = () => {
     if (!editingMold) return;
     
     try {
-      await apiService.updateMold(editingMold._id, formData);
+      await dispatch(updateMold({ id: editingMold._id, data: formData }));
       toast.success('Mold updated successfully');
       
       // Refresh the current page
@@ -305,7 +272,7 @@ const Molds: React.FC = () => {
     }
   });
 
-  const getDepartmentName = (mold: Mold) => {
+  const getDepartmentName = (mold: any) => {
     if (typeof mold.departmentId === 'object') {
       return mold.departmentId.name;
     }
@@ -313,7 +280,7 @@ const Molds: React.FC = () => {
     return department ? department.name : 'Unknown';
   };
 
-  const Pagination = ({ pagination }: { pagination: PaginationData }) => {
+  const Pagination = ({ pagination }: { pagination: any }) => {
     if (pagination.totalPages <= 1) return null;
 
     const getPageNumbers = () => {
@@ -407,9 +374,6 @@ const Molds: React.FC = () => {
       </div>
     );
   }
-
-  const molds = moldsData?.molds || [];
-  const pagination = moldsData?.pagination;
 
   return (
     <div className={`space-y-6 ${bgClass} min-h-screen p-4`}>
